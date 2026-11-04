@@ -56,6 +56,7 @@ pub(crate) fn take_target(peer: &str) -> Option<Target> {
 pub struct LandeskUi {
     frames: Arc<Mutex<Option<Frame>>>,
     seq: Arc<std::sync::atomic::AtomicU64>,
+    messages: Arc<Mutex<Vec<String>>>,
 }
 
 impl InvokeUiSession for LandeskUi {
@@ -118,6 +119,13 @@ impl InvokeUiSession for LandeskUi {
     }
     fn msgbox(&self, msgtype: &str, _title: &str, text: &str, _link: &str, _retry: bool) {
         log::warn!("landesk: peer message ({msgtype}): {text}");
+        // 界面把这条显示出来：连不上时用户在窗口里就能看到原因，不必去翻日志文件。
+        if !text.trim().is_empty() {
+            self.messages
+                .lock()
+                .unwrap()
+                .push(format!("{msgtype}: {text}"));
+        }
     }
     fn cancel_msgbox(&self, _tag: &str) {}
     fn switch_back(&self, _id: &str) {}
@@ -141,10 +149,16 @@ impl InvokeUiSession for LandeskUi {
 /// 一次 landesk 会话的把手：界面从这里取最新画面、发输入。
 pub struct SessionHandle {
     frames: Arc<Mutex<Option<Frame>>>,
+    messages: Arc<Mutex<Vec<String>>>,
     session: Session<LandeskUi>,
 }
 
 impl SessionHandle {
+    /// 取走并清空会话期间的提示（“已连接”“密码不对”之类）。
+    pub fn drain_messages(&self) -> Vec<String> {
+        let mut messages = self.messages.lock().unwrap();
+        std::mem::take(&mut *messages)
+    }
     pub fn latest_frame(&self) -> Option<Frame> {
         self.frames.lock().unwrap().clone()
     }
@@ -188,10 +202,12 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
     register_target(&peer, Target { book, key, control });
 
     let frames = Arc::new(Mutex::new(None));
+    let messages = Arc::new(Mutex::new(Vec::new()));
     let mut session = Session::<LandeskUi>::default();
     session.ui_handler = LandeskUi {
         frames: frames.clone(),
         seq: Default::default(),
+        messages: messages.clone(),
     };
     session.lc.write().unwrap().initialize(
         peer.clone(),
@@ -204,6 +220,7 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
     );
     let handle = SessionHandle {
         frames: frames.clone(),
+        messages,
         session: session.clone(),
     };
 
