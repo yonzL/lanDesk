@@ -1,7 +1,7 @@
 ---
 id: landesk-architecture
 type: architecture-design
-title: landesk 架构：直连传输、双挑战身份、单控制令牌
+title: landesk 架构：直连传输、双挑战身份、与上游同形的并发
 status: active
 parent: landesk-goal
 ---
@@ -124,7 +124,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 - **无出站**：Service 除应答外不发起任何连接；任何 hbbs/hbbr/updater 调用都是缺陷。landesk 模式下以跳过 `RendezvousMediator` 落实，日志里应出现 `landesk: skipping the rendezvous mediator`。
 - **证明先于会话**：`AuthProof` 验证通过之前，Service 不接受任何会话消息；拒绝日志恰好一行。
 - **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中；保护靠文件系统 ACL（DPAPI 为可选加固，尚未实现）。
-- **单控制令牌**：同一台 Service 任何时刻至多一个控制者，抢占是原子的降级而非并行。
+- **并发不仲裁**：与上游一致，多个已认证连接都能操作，后写入者生效；“只看”是连接时的声明，服务端只记日志。
 - **分组无权限**：组/子组只影响 Master 侧怎么找机器，不进入任何授权判断。
 - **凭据不入库**：landesk 不持有任何 Windows 账号；登录界面上的输入是人打的。
 

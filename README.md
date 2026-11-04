@@ -12,7 +12,7 @@
 | 文档 | 内容 |
 |---|---|
 | [`goal-and-requirements.md`](goal-and-requirements.md) | 产品目标、能力清单、非目标、与 RustDesk / SubnetDesk / Veyon 的差别 |
-| [`architecture.md`](architecture.md) | 直连传输、双挑战身份与 TOFU 指纹、单控制令牌仲裁、RustDesk 模块取舍 |
+| [`architecture.md`](architecture.md) | 直连传输、双挑战身份与 TOFU 指纹、并发模型、RustDesk 模块取舍 |
 
 两份文档都是活的：能力变了、边界动了，就在同一次改动里更新它们。
 
@@ -35,9 +35,11 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 ## 状态
 
-早期，但核心链路已通。已有：设计文档、RustDesk 基线、`libs/hbb_common` 里的双向 `keyauth`（主机身份 + 全局私钥证明 + TOFU 指纹），以及 **Service 监听与 Master 拨号**的完整往返——同机双进程已验证：持钥两连成功、错钥与指纹变更均被拒，且 Service 不再向任何协调服务注册。
+早期，但核心链路已通。已有：设计文档、RustDesk 基线、`libs/hbb_common` 里的双向 `keyauth`（主机身份 + 全局私钥证明 + TOFU 指纹）、Service 监听与 Master 拨号、地址簿（含 CSV 导入与指纹标记）、`landesk.json` 配置与服务自启路径，以及一个最小图形界面——同机双进程的四条路径已验证，且 Service 不再向任何协调服务注册。
 
-未有：图形界面（目前只有命令行 `--landesk-connect`）、CSV 导入、观察者/抢占仲裁（`arbiter`）、安装器与服务自启。公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，但 landesk 模式已不再启动它们；彻底删除随对应的功能替换逐块进行——它们的删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
+**还没有：真正的远端会话。** 拨号目前只走到“身份通过、连上”就结束，画面与输入还没接进界面——所以现在的试用能验证的是“谁能连、连的是谁、被拒为什么”，而不是“能不能远程操作”。这是下一刀的主体。
+
+另：公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，但 landesk 模式已不再启动它们；彻底删除随对应功能替换逐块进行——删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
 
 ## 构建
 
