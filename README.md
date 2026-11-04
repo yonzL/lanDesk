@@ -73,6 +73,58 @@ export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
 cargo check -p rustdesk --lib
 ```
 
+## 试用
+
+两台 Windows 机器，同一网段或 VPN 内。先在两台机器上都放一份 `rustdesk.exe`（`target/debug/rustdesk.exe`，或 `cargo build --release -p rustdesk --bin rustdesk` 后的 `target/release/`）。
+
+**在被控机（Service）上做的前置：** 先在控制机上生成密钥对，把公钥拷过来。
+
+```bash
+# 控制机（Master）上：生成全局密钥对，记下打印出的 public key
+rustdesk.exe --landesk-genkey master.key
+
+# 被控机（Service）上：用那个公钥启动，监听 21118
+rustdesk.exe --server --landesk-listen 21118 --landesk-auth-key <公钥十六进制>
+```
+
+控制机需要能连到被控机的 21118（Windows 防火墙要先放行）。
+
+**在控制机上建档并连接：**
+
+```bash
+# 1. 一份清单：组, 子组, 显示名, 地址:端口
+cat > hosts.csv <<'EOF'
+组,子组,显示名,地址
+办公室,开发组,工位-01,10.0.0.5:21118
+EOF
+
+rustdesk.exe --landesk-book-import hosts.csv     # 导入（按地址:端口覆盖式合并）
+rustdesk.exe --landesk-book-list                 # 看清单与每台的指纹状态
+rustdesk.exe --landesk-connect 10.0.0.5:21118    # 连过去
+rustdesk.exe --landesk-book-verify 10.0.0.5:21118 # 首次连过、核过指纹后标为已验证
+```
+
+默认地址簿是 exe 同目录的 `addressbook.json`，私钥是 `private.key`；两者都能用 `--landesk-book` / `--landesk-key` 换位置。
+
+**被拒时看什么：** Service 日志里恰好一行，Master 侧同一句话回显。
+
+| 日志里的原因 | 含义 |
+|---|---|
+| `no-bound-key` | Service 启动时没给 `--landesk-auth-key` |
+| `bad-signature` | 你的私钥与 Service 绑定的公钥不配对 |
+| `bad-host-proof` | 对面无法证明它的主机密钥（通常说明它不是 landesk） |
+| `host-fingerprint-mismatch` | 这台机器的主机密钥变了：查地址簿里的指纹，确认后删掉该条重连 |
+| `no-proof-yet` | 握手没走完（超时或对端不听 landesk） |
+
+**本机自测（不用两台机器）：**
+
+```bash
+bash scripts/landesk-smoke.sh          # 默认端口 21118
+PORT=31218 bash scripts/landesk-smoke.sh   # 本机已有 Service 时换端口
+```
+
+它会起一个 Service、用同一个二进制当 Master，把四条路径跑一遍并断言“没有启动 rendezvous”。
+
 ## 许可
 
 GNU Affero General Public License v3.0。
