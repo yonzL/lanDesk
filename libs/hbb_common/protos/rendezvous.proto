@@ -264,9 +264,12 @@ message AuthNonce {
 }
 
 // landesk: the Master's proof of holding the global private key. The signature covers
-// AUTH_DOMAIN || transcript digest || nonce, so it is bound to this connection alone.
+// AUTH_DOMAIN || transcript digest || nonce, so it is bound to this connection alone. `control`
+// says whether this connection wants the control token: several Masters can hold the same key and
+// share one Service, and most of them only want to watch.
 message AuthProof {
   bytes signature = 1;
+  bool control = 2;
 }
 
 // landesk: the Service's acceptance. Without it the Master cannot tell its proof from a dropped

@@ -160,6 +160,13 @@ pub fn verify_auth(
     }
 }
 
+/// 这条连接在 Service 侧的角色：持令牌的控制者，或只看画面的观察者。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthRole {
+    Controller,
+    Viewer,
+}
+
 /// 一次连接被拒的原因，日志一行的内容就是它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
@@ -305,7 +312,7 @@ pub async fn challenge_and_verify(
     host_pk: &sign::PublicKey,
     host_sk: &sign::SecretKey,
     transcript: &[u8; 32],
-) -> std::result::Result<(), RejectReason> {
+) -> std::result::Result<AuthRole, RejectReason> {
     let Some(pk) = bound_pk else {
         return Err(RejectReason::NoBoundKey);
     };
@@ -335,7 +342,11 @@ pub async fn challenge_and_verify(
                     if stream.send(&ok).await.is_err() {
                         return Err(RejectReason::NoProofYet);
                     }
-                    Ok(())
+                    Ok(if proof.control {
+                        AuthRole::Controller
+                    } else {
+                        AuthRole::Viewer
+                    })
                 }
                 Err(reason) => Err(reason),
             },
@@ -347,6 +358,7 @@ pub async fn challenge_and_verify(
 
 /// Master 侧：等对面的挑战，先验证主机身份（并按指纹库做 TOFU），再用全局私钥回证明。
 ///
+/// `control` 为真才申请控制令牌；为假时以观察者身份接入（只看、不抢操作权）。
 /// 返回指纹库对这台机器的结论：`New` 表示首次连接、已记录并标为未验证。
 pub async fn answer_challenge(
     stream: &mut crate::tcp::FramedStream,
@@ -354,6 +366,7 @@ pub async fn answer_challenge(
     transcript: &[u8; 32],
     pinned: &mut PinnedHosts,
     addr: &str,
+    control: bool,
 ) -> std::result::Result<PinOutcome, RejectReason> {
     let bytes = match stream.next_timeout(AUTH_TIMEOUT_MS).await {
         Some(Ok(bytes)) => bytes,
@@ -377,6 +390,7 @@ pub async fn answer_challenge(
     let mut proof = crate::rendezvous_proto::RendezvousMessage::new();
     proof.set_auth_proof(crate::rendezvous_proto::AuthProof {
         signature: sign_auth(kp, transcript, &challenge.nonce).into(),
+        control,
         ..Default::default()
     });
     stream.send(&proof).await.map_err(|_| RejectReason::NoProofYet)?;
@@ -569,9 +583,9 @@ mod tests {
         let (mut master, mut service) = stream_pair().await;
         let (verified, answered) = tokio::join!(
             challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
-            answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
+            answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118", true)
         );
-        assert_eq!(verified, Ok(()));
+        assert_eq!(verified, Ok(AuthRole::Controller));
         // 首次连接：记录指纹，标记未验证。
         assert_eq!(answered, Ok(PinOutcome::New));
         assert_eq!(pinned.len(), 1);
@@ -601,7 +615,8 @@ mod tests {
                 &master_key,
                 &digest,
                 &mut pinned,
-                "127.0.0.1:21118"
+                "127.0.0.1:21118",
+                true
             )
         );
         assert_eq!(verified, Err(RejectReason::BadSignature));
@@ -621,7 +636,7 @@ mod tests {
         let (mut master, mut service) = stream_pair().await;
         let (verified, answered) = tokio::join!(
             challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
-            answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
+            answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118", true)
         );
         assert_eq!(answered, Err(RejectReason::HostFingerprintMismatch));
         // Master 不发证明，Service 只能等到超时。
@@ -649,11 +664,34 @@ mod tests {
             let (mut master, mut service) = stream_pair().await;
             let (verified, answered) = tokio::join!(
                 challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
-                answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
+                answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118", true)
             );
-            assert_eq!(verified, Ok(()));
+            assert_eq!(verified, Ok(AuthRole::Controller));
             assert_eq!(answered, Ok(expected));
         }
+    }
+
+    #[tokio::test]
+    async fn a_master_can_connect_as_a_viewer() {
+        // 多台 Master 共用一把私钥：来看的那台不该抢走操作权。
+        let kp = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
+        let digest = transcript();
+        let mut pinned = PinnedHosts::default();
+        let (mut master, mut service) = stream_pair().await;
+        let (verified, answered) = tokio::join!(
+            challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
+            answer_challenge(
+                &mut master,
+                &kp,
+                &digest,
+                &mut pinned,
+                "127.0.0.1:21118",
+                false
+            )
+        );
+        assert_eq!(verified, Ok(AuthRole::Viewer));
+        assert_eq!(answered, Ok(PinOutcome::New));
     }
 
     #[tokio::test]
@@ -667,7 +705,7 @@ mod tests {
             challenge_and_verify(&mut service, None, &host_pk, &host_sk, &digest),
             tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
+                answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118", true)
             )
         );
         assert_eq!(verified, Err(RejectReason::NoBoundKey));

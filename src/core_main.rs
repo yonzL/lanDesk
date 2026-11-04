@@ -149,7 +149,12 @@ pub fn core_main() -> Option<CoreMainAction> {
             Ok(runtime) => runtime,
             Err(err) => return Some(CoreMainAction::ExitFailure(err.into())),
         };
-        return match runtime.block_on(crate::transport::dial(&addr, &book, &key)) {
+        return match runtime.block_on(crate::transport::dial(
+            &addr,
+            &book,
+            &key,
+            !config.view,
+        )) {
             Ok(outcome) => {
                 log::info!("landesk: {addr} accepted ({outcome:?})");
                 None

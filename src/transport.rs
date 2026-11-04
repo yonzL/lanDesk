@@ -52,7 +52,12 @@ pub async fn start(port: u16) -> ResultType<()> {
 ///
 /// 密钥交换本身不验签：没有 rendezvous 可问主机公钥，主机身份在加密通道里由 `AuthNonce`
 /// 携带并当场证明，再由地址簿里的指纹判定是否可信。
-pub async fn dial(addr: &str, book_path: &Path, key_path: &Path) -> ResultType<PinOutcome> {
+pub async fn dial(
+    addr: &str,
+    book_path: &Path,
+    key_path: &Path,
+    control: bool,
+) -> ResultType<PinOutcome> {
     let keys = keyauth::GlobalKeyPair::load(key_path)?;
     let mut book = crate::addressbook::AddressBook::load(book_path)?;
 
@@ -105,7 +110,7 @@ pub async fn dial(addr: &str, book_path: &Path, key_path: &Path) -> ResultType<P
         id_pk.kx_version,
         picked,
     );
-    let outcome = keyauth::answer_challenge(&mut conn, &keys, &transcript, book.pins_mut(), addr)
+    let outcome = keyauth::answer_challenge(&mut conn, &keys, &transcript, book.pins_mut(), addr, control)
         .await
         .map_err(|reason| hbb_common::anyhow::anyhow!(keyauth::reject_log_line(reason, addr)))?;
     book.save(book_path)?;

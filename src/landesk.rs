@@ -41,6 +41,8 @@ pub struct LandeskConfig {
     pub book_verify: Option<String>,
     /// 把当前参数写成可执行文件同目录的 `landesk.json`（服务开机自启动时读它）。
     pub save_config: bool,
+    /// Master 侧：以观察者身份连接（只看画面，不抢操作权）。
+    pub view: bool,
 }
 
 impl LandeskConfig {
@@ -79,6 +81,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut book_list = false;
     let mut book_verify = None;
     let mut save_config = false;
+    let mut view = false;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -143,6 +146,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 book_verify = Some(value);
             }
             "--landesk-save-config" => save_config = true,
+            "--landesk-view" => view = true,
             _ => rest.push(arg),
         }
     }
@@ -165,6 +169,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || book_list
         || book_verify.is_some()
         || save_config
+        || view
     {
         CONFIG.get_or_init(|| LandeskConfig {
             listen_port,
@@ -178,6 +183,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             book_list,
             book_verify,
             save_config,
+            view,
         });
     }
     Ok(())
@@ -342,9 +348,9 @@ pub async fn enforce(
     stream: &mut hbb_common::Stream,
     transcript: &[u8; 32],
     addr: SocketAddr,
-) -> ResultType<()> {
+) -> ResultType<keyauth::AuthRole> {
     let Some(config) = config() else {
-        return Ok(());
+        return Ok(keyauth::AuthRole::Controller);
     };
     let result = match stream {
         hbb_common::Stream::Tcp(tcp) => match host_keypair() {
@@ -365,7 +371,7 @@ pub async fn enforce(
         _ => Err(RejectReason::NoProofYet),
     };
     match result {
-        Ok(()) => Ok(()),
+        Ok(role) => Ok(role),
         Err(reason) => {
             log::warn!("{}", keyauth::reject_log_line(reason, &addr.to_string()));
             bail!("landesk: authentication refused ({reason})")

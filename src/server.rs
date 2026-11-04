@@ -236,7 +236,10 @@ pub async fn create_tcp_connection(
     };
     // landesk: 密钥交换之后、任何会话消息之前要求 Master 证明自己。未配置时是空操作。
     if let Some(transcript) = transcript {
-        crate::landesk::enforce(&mut stream, &transcript, addr).await?;
+        let role = crate::landesk::enforce(&mut stream, &transcript, addr).await?;
+        // 与上游一致：多个操作者可以同时操作，后写入者生效。这里只把“以观察者接入”记一笔，
+        // 便于事后看清谁来过；不做事后仲裁，也不阻止任何一方发输入。
+        log::info!("landesk: connection {id} joined as {role:?}");
     }
 
     #[cfg(target_os = "macos")]

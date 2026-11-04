@@ -78,11 +78,11 @@ impl App {
         tree
     }
 
-    fn connect(&mut self, addr: String) {
+    fn connect(&mut self, addr: String, control: bool) {
         if self.receiver.is_some() {
             return;
         }
-        self.log.push(format!("连接 {addr} …"));
+        self.log.push(if control { format!("连接 {addr}（申请操作权）…") } else { format!("连接 {addr}（只看）…") });
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
         let book_path = self.book_path.clone();
@@ -93,7 +93,7 @@ impl App {
                 .build()
             {
                 Ok(runtime) => runtime
-                    .block_on(librustdesk::transport::dial(&addr, &book_path, &key_path))
+                    .block_on(librustdesk::transport::dial(&addr, &book_path, &key_path, control))
                     .map_err(|err| format!("{err:#}")),
                 Err(err) => Err(format!("{err}")),
             };
@@ -249,11 +249,18 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 let busy = self.receiver.is_some();
                 if ui
-                    .add_enabled(!busy, egui::Button::new("连接"))
-                    .on_hover_text("验证对面主机身份并用本机私钥证明自己")
+                    .add_enabled(!busy, egui::Button::new("连接（申请操作权）"))
+                    .on_hover_text("验证对面主机身份、用本机私钥证明自己，并拿操作权（会把当前操作者降为只读）")
                     .clicked()
                 {
-                    self.connect(addr.clone());
+                    self.connect(addr.clone(), true);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("只看"))
+                    .on_hover_text("同样验证身份与私钥，但不抢操作权：只收画面")
+                    .clicked()
+                {
+                    self.connect(addr.clone(), false);
                 }
                 if can_verify && ui.button("核过指纹，标为已验证").clicked() {
                     self.mark_verified(&addr);
