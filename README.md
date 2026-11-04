@@ -136,6 +136,17 @@ PORT=31218 bash scripts/landesk-smoke.sh   # 本机已有 Service 时换端口
 
 它会起一个 Service、用同一个二进制当 Master，把四条路径跑一遍并断言“没有启动 rendezvous”。
 
+**图形界面（Master）：**
+
+```bash
+cargo build -p landesk-gui      # 纯 Rust 窗口，不需要 Flutter
+./target/debug/landesk-gui.exe
+```
+
+左边是地址簿的组/子组树，选中一台后右側显示地址与指纹状态；点“连接”就是拿着本机私钥拨过去，结果显示在底部。首次连过、自己核过指纹之后，可以点“核过指纹，标为已验证”。
+
+这个窗口默认读写 exe 同目录的 `addressbook.json` 与 `private.key`——和命令行版一致（把两个文件放到 `landesk-gui.exe` 旁边即可）；CSV 导入仍然用命令行的 `--landesk-book-import`。
+
 ## 许可
 
 GNU Affero General Public License v3.0。

@@ -68,9 +68,9 @@ mod ui_interface;
 mod ui_session_interface;
 
 mod hbbs_http;
-mod addressbook;
-mod landesk;
-mod transport;
+pub mod addressbook;
+pub mod landesk;
+pub mod transport;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub mod clipboard_file;

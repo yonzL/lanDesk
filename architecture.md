@@ -13,7 +13,7 @@ parent: landesk-goal
 ## 拓扑
 
 ```
-Master (Flutter UI + Rust core)  ──TCP 直连──►  Service (无界面, Windows 服务)
+Master (最小自有窗口 + Rust core)  ──TCP 直连──►  Service (无界面, Windows 服务)
    地址簿 / 全局私钥 / 指纹库                      绑定公钥 / 主机密钥 / 端口
 ```
 
@@ -73,7 +73,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 - `client.rs` + `client/`（io_loop、文件、截图）、`server.rs` + `server/`（video / input / clipboard / display / connection）——会话两侧的本体。
 - `ipc/`、`service.rs`、`platform/windows`——Windows 服务与活动会话进程之间的桥，含 SYSTEM 桌面访问。
 - `libs/scrap`、`libs/enigo`、`libs/clipboard`、`libs/hbb_common`——采集、注入、剪贴板、协议与密码学原语。
-- `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——Master 界面，裁掉以 ID 为中心的连接页。
+- `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——上游的 Master 界面。**landesk 不用它**：见下方“Master 界面”一节。
 
 移除：
 
@@ -105,7 +105,15 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 ### 落地形态（Master 侧）
 
 - `--landesk-genkey <path>`：生成全局密钥对，打印公钥供 Service 绑定。
-- `--landesk-connect <addr:port>`：拨号、验主机身份、回证明、把指纹变化落盘，然后退出——图形界面接管前的命令行形态。
+- `--landesk-connect <addr:port>`：拨号、验主机身份、回证明、把指纹变化落盘，然后退出。
+
+### Master 界面
+
+`landesk-gui`：一个独立的小 crate（`eframe`/egui，glow 后端，纯 Rust），只做三件事——按组/子组展示地址簿、对选中的机器拨号、把人能看懂的结果写在底部一行日志。
+
+它取代了早先“裁剪上游 Flutter 界面”的打算，原因有三：Flutter 的 Dart 改造量远大于这个窗口；这台开发机上没有 Flutter 工具链（SDK 在下载中，不阻塞）；一个 300 行的窗口能直接编译、直接跑，符合“简单、可知”。上游 `flutter/` 仍留在树里，将来若要做主控端界面或移动端，它仍在原处。
+
+两个已知取舍：wgpu 后端与主 crate 锁定的旧 `windows` crate 撞版本，所以固定走 glow；`eframe` 固定 0.31（0.37 的 `App` trait 与面板 API 已变）。
 - 地址簿：`addressbook.json` 在可执行文件同目录（`--landesk-book` 可改），条目为 `组/子组/显示名/地址:端口`，指纹库内嵌在同一份文件里；导入导出就是整份文件的进出。
 - 私钥：`private.key` 在可执行文件同目录（`--landesk-key` 可改），保护靠文件系统 ACL——与 Veyon 同一路子（它用 `keys/public` 与 `keys/private` 两个目录、每个密钥一个子目录，就为了能分别设权限）；DPAPI 是可选的加固，不是缺口。
 

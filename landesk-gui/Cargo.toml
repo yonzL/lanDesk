@@ -1,0 +1,16 @@
+[package]
+name = "landesk-gui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "landesk-gui"
+path = "src/main.rs"
+
+[dependencies]
+# 纯 Rust 的最小窗口：不引进 Flutter/Dart 工具链，能在这台机器上直接编译与运行。
+# 只用 glow（OpenGL）后端：wgpu 后端会与主 crate 里锁定的旧 windows crate 撞版本。
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+librustdesk = { path = "..", package = "rustdesk" }
+hbb_common = { path = "../libs/hbb_common" }
