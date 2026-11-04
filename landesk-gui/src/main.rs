@@ -44,6 +44,7 @@ struct App {
     last_frame_seq: u64,
     remote_size: (usize, usize),
     last_pointer: Option<(i32, i32)>,
+    last_modifiers: egui::Modifiers,
 }
 
 impl App {
@@ -61,6 +62,7 @@ impl App {
             last_frame_seq: 0,
             remote_size: (0, 0),
             last_pointer: None,
+            last_modifiers: egui::Modifiers::NONE,
         };
         app.reload();
         app
@@ -221,6 +223,23 @@ impl App {
             modifiers.shift,
             modifiers.command,
         );
+        // 修饰键：Ctrl/Shift/Alt/Meta 的状态变化要真的发过去，否则 Ctrl+C 这类组合在远端无效。
+        for (now, before, key) in [
+            (modifiers.ctrl, self.last_modifiers.ctrl, ControlKey::Control),
+            (modifiers.shift, self.last_modifiers.shift, ControlKey::Shift),
+            (modifiers.alt, self.last_modifiers.alt, ControlKey::Alt),
+            (modifiers.command, self.last_modifiers.command, ControlKey::Meta),
+        ] {
+            if now != before {
+                let mut evt = KeyEvent::new();
+                evt.set_control_key(key);
+                evt.down = now;
+                evt.press = now;
+                session.send_key(&evt);
+            }
+        }
+        self.last_modifiers = modifiers;
+
         let to_remote = |pos: egui::Pos2| -> (i32, i32) {
             let x = ((pos.x - rect.min.x) / rect.width().max(1.0) * rw).clamp(0.0, rw - 1.0);
             let y = ((pos.y - rect.min.y) / rect.height().max(1.0) * rh).clamp(0.0, rh - 1.0);
@@ -260,7 +279,7 @@ impl App {
         }
         if let Some(pos) = response.hover_pos() {
             if scroll.abs() > 0.5 {
-                let (x, y) = to_remote(pos);
+                let (x, _y) = to_remote(pos);
                 session.send_mouse(
                     MOUSE_TYPE_WHEEL,
                     x,
