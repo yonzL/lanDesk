@@ -16,6 +16,13 @@ struct Service {
     log: PathBuf,
 }
 
+impl Service {
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// 测试进程里把日志打到 stderr——库里 `log::` 的输出没有初始化器时是静默的。
 fn init_logging() {
     struct Stderr;
@@ -99,7 +106,7 @@ fn a_landesk_session_receives_a_frame() {
 
     // 端口按进程号偏移，避免与家目录里跑着的 Service 撞车。
     let port = 31300 + (std::process::id() % 200) as u16;
-    let service = start_service(port, &pub_key, dir.join("service.log"));
+    let mut service = start_service(port, &pub_key, dir.join("service.log"));
     let addr = format!("127.0.0.1:{}", service.port);
 
     let session = librustdesk::landesk::session::start(
@@ -112,8 +119,10 @@ fn a_landesk_session_receives_a_frame() {
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut reported_pin = false;
+    let mut first_frame_seq = 0;
     while Instant::now() < deadline {
-        if session.frame_seq() > 0 {
+        let seq = session.frame_seq();
+        if seq > 0 && first_frame_seq == 0 {
             let frame = session.latest_frame().expect("frame");
             assert!(frame.width > 0 && frame.height > 0, "frame has no size");
             assert_eq!(
@@ -126,7 +135,29 @@ fn a_landesk_session_receives_a_frame() {
                 book.pins().get(&addr).is_some(),
                 "the host fingerprint was not pinned"
             );
-            session.close();
+            first_frame_seq = seq;
+            // 输入路径：发一次鼠标移动与点击，不应该让会话出错。
+            session.send_mouse(0, 10, 10, false, false, false, false);
+            session.send_mouse(1, 10, 10, false, false, false, false);
+            session.send_mouse(2, 10, 10, false, false, false, false);
+        } else if first_frame_seq > 0 && seq > first_frame_seq {
+            // 画面在持续更新，不是只有首帧。
+            assert!(!session.is_closed(), "session closed while streaming");
+            let expected = book_path.clone();
+            drop(expected);
+            // 对端被杀掉之后，会话应当自行结束。
+            service.kill();
+            let close_deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < close_deadline {
+                if session.is_closed() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            assert!(
+                session.is_closed(),
+                "the session did not notice that the service went away"
+            );
             return;
         }
         if !reported_pin {
@@ -138,7 +169,7 @@ fn a_landesk_session_receives_a_frame() {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+    assert!(first_frame_seq > 0, "no frame arrived within 60s");
     session.close();
     dump(&service.log);
-    panic!("no frame arrived within 60s");
 }
