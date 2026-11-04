@@ -250,6 +250,20 @@ message KxParams {
   uint32 version = 2;
 }
 
+// landesk: the Service's challenge, sent over the already key-exchanged channel before it accepts
+// any session message. `nonce` is fresh per connection; `version` is the authenticator's version,
+// so a peer that speaks another one is refused instead of downgraded.
+message AuthNonce {
+  bytes nonce = 1;
+  uint32 version = 2;
+}
+
+// landesk: the Master's proof of holding the global private key. The signature covers
+// AUTH_DOMAIN || transcript digest || nonce, so it is bound to this connection alone.
+message AuthProof {
+  bytes signature = 1;
+}
+
 message HealthCheck {
   string token = 1;
 }
@@ -306,5 +320,7 @@ message RendezvousMessage {
     HttpProxyRequest http_proxy_request = 27;
     HttpProxyResponse http_proxy_response = 28;
     IceCandidate ice_candidate = 29;
+    AuthNonce auth_nonce = 30;
+    AuthProof auth_proof = 31;
   }
 }
