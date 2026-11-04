@@ -2623,6 +2623,12 @@ impl Connection {
     }
 
     fn validate_password(&mut self, allow_permanent_password: bool) -> bool {
+        // landesk: 能走到登录这一步的连接，已经在 `create_tcp_connection` 里过了密钥证明；
+        // 这种部署没有密码，也不接受“知道密码”作为凭证。
+        if crate::landesk::takes_over_network() {
+            log::debug!("landesk: password check skipped, the connection proved a key");
+            return true;
+        }
         if password::temporary_enabled() {
             let password = password::temporary_password();
             if self.validate_password_plain(&password) {
