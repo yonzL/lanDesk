@@ -48,16 +48,25 @@ pub async fn start(port: u16) -> ResultType<()> {
     }
 }
 
-/// Master 侧拨号：密钥交换 → 主机身份（TOFU 指纹）→ 用全局私钥回证明。
+/// 一次已经完成密钥交换与双向证明的连接。
+///
+/// `host_pk` 是对面主机签名公钥（已验签，并已按指纹库判定），给上层用作会话的身份记录。
+pub struct Authenticated {
+    pub stream: tcp::FramedStream,
+    pub host_pk: [u8; 32],
+    pub outcome: PinOutcome,
+}
+
+/// 拨号并完成身份：密钥交换 → 主机身份（TOFU 指纹）→ 用全局私钥回证明。
 ///
 /// 密钥交换本身不验签：没有 rendezvous 可问主机公钥，主机身份在加密通道里由 `AuthNonce`
 /// 携带并当场证明，再由地址簿里的指纹判定是否可信。
-pub async fn dial(
+pub async fn connect_authenticated(
     addr: &str,
     book_path: &Path,
     key_path: &Path,
     control: bool,
-) -> ResultType<PinOutcome> {
+) -> ResultType<Authenticated> {
     let keys = keyauth::GlobalKeyPair::load(key_path)?;
     let mut book = crate::addressbook::AddressBook::load(book_path)?;
 
@@ -114,7 +123,24 @@ pub async fn dial(
         .await
         .map_err(|reason| hbb_common::anyhow::anyhow!(keyauth::reject_log_line(reason, addr)))?;
     book.save(book_path)?;
-    Ok(outcome)
+    log::info!("landesk: authenticated {addr} ({outcome:?})");
+    Ok(Authenticated {
+        stream: conn,
+        host_pk: their_pk_b,
+        outcome,
+    })
+}
+
+/// 拨号、证明身份，然后立即断开——冒烟与自检用的形态。
+pub async fn dial(
+    addr: &str,
+    book_path: &Path,
+    key_path: &Path,
+    control: bool,
+) -> ResultType<PinOutcome> {
+    let authenticated = connect_authenticated(addr, book_path, key_path, control).await?;
+    log::info!("landesk: dial done for {addr} ({:?})", authenticated.outcome);
+    Ok(authenticated.outcome)
 }
 
 fn to_array_32(bytes: &[u8]) -> Option<[u8; 32]> {
