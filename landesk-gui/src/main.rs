@@ -157,6 +157,10 @@ impl App {
         let Some(session) = &self.session else {
             return;
         };
+        // 会话期间的提示（已连接 / 登录失败 / 对端消息）都显示在底部日志里。
+        for message in session.drain_messages() {
+            self.log.push(message);
+        }
         let seq = session.frame_seq();
         if seq == self.last_frame_seq {
             ctx.request_repaint_after(Duration::from_millis(16));
