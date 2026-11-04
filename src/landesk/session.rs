@@ -150,10 +150,16 @@ impl InvokeUiSession for LandeskUi {
 pub struct SessionHandle {
     frames: Arc<Mutex<Option<Frame>>>,
     messages: Arc<Mutex<Vec<String>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
     session: Session<LandeskUi>,
 }
 
 impl SessionHandle {
+    /// 会话是否已经结束（对端断开、认证被拒、登录失败等）。界面据此回到可重连的状态。
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// 取走并清空会话期间的提示（“已连接”“密码不对”之类）。
     pub fn drain_messages(&self) -> Vec<String> {
         let mut messages = self.messages.lock().unwrap();
@@ -218,9 +224,11 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
         None,
         None,
     );
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let handle = SessionHandle {
         frames: frames.clone(),
         messages,
+        closed: closed.clone(),
         session: session.clone(),
     };
 
@@ -240,6 +248,7 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
             let mut remote = crate::client::io_loop::Remote::new(session, receiver, sender);
             remote.io_loop("", "", 0).await;
         });
+        closed.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     Ok(handle)
 }

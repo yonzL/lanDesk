@@ -162,6 +162,20 @@ impl App {
             self.log.push(message);
         }
         let seq = session.frame_seq();
+        if session.is_closed() {
+            // 先排干剩下的提示，再回到可重连的状态。
+            for message in session.drain_messages() {
+                self.log.push(message);
+            }
+            self.log.push("会话已结束".into());
+            self.session = None;
+            self.session_peer = None;
+            self.texture = None;
+            self.last_frame_seq = 0;
+            self.remote_size = (0, 0);
+            self.reload();
+            return;
+        }
         if seq == self.last_frame_seq {
             ctx.request_repaint_after(Duration::from_millis(16));
             return;
