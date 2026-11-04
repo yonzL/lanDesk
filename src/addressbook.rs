@@ -115,6 +115,128 @@ impl AddressBook {
     pub fn fingerprint_of(&self, addr: &str) -> Option<&str> {
         self.pins.get(addr).map(|host| host.fingerprint.as_str())
     }
+
+    /// 按条目列表合并：`地址:端口` 已存在就覆盖，否则追加。返回新增/覆盖的条数。
+    pub fn merge_entries(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
+        let mut count = 0;
+        for entry in entries {
+            self.upsert(entry);
+            count += 1;
+        }
+        count
+    }
+
+    /// 导出为 CSV：首行是表头，之后每行一个条目。
+    pub fn to_csv(&self) -> String {
+        let mut out = String::from("组,子组,显示名,地址\n");
+        for entry in &self.entries {
+            out.push_str(&format!(
+                "{},{},{},{}\n",
+                csv_field(&entry.group),
+                csv_field(&entry.subgroup),
+                csv_field(&entry.name),
+                csv_field(&entry.addr),
+            ));
+        }
+        out
+    }
+
+    /// 按 CSV 文本合并条目：先解析全部行，全部合法才落地（不会导到一半留下半本书）。
+    pub fn merge_csv(&mut self, text: &str) -> ResultType<usize> {
+        let entries = parse_csv_entries(text)?;
+        Ok(self.merge_entries(entries))
+    }
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains(['\"', ',']) {
+        format!("\"{}\"", value.replace('\"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+/// 最小 CSV 解析：支持引号包裹与双引号转义，不支持字段内换行（遇到就报错，而不是猜）。
+fn parse_csv_rows(text: &str) -> ResultType<Vec<Vec<String>>> {
+    let mut rows = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let mut fields = Vec::new();
+        let mut field = String::new();
+        let mut chars = line.chars().peekable();
+        let mut in_quotes = false;
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' if in_quotes => {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        field.push('"');
+                    } else {
+                        in_quotes = false;
+                    }
+                }
+                '"' => in_quotes = true,
+                ',' if !in_quotes => {
+                    fields.push(std::mem::take(&mut field));
+                }
+                other => field.push(other),
+            }
+        }
+        if in_quotes {
+            bail!("第 {} 行的引号没有闭合", index + 1);
+        }
+        fields.push(field);
+        rows.push(fields);
+    }
+    Ok(rows)
+}
+
+fn parse_csv_entries(text: &str) -> ResultType<Vec<Entry>> {
+    let mut rows = parse_csv_rows(text)?;
+    if rows.is_empty() {
+        bail!("CSV 里没有任何条目");
+    }
+    let header: Vec<String> = rows.remove(0).iter().map(|h| h.trim().to_lowercase()).collect();
+    let column = |names: &[&str]| -> Option<usize> {
+        header
+            .iter()
+            .position(|h| names.iter().any(|name| name == h))
+    };
+    let Some(addr_column) = column(&["地址", "addr", "address", "host", "地址:端口"]) else {
+        bail!("CSV 表头里找不到地址列（可用：地址 / addr / address / host）");
+    };
+    let group_column = column(&["组", "group"]);
+    let subgroup_column = column(&["子组", "subgroup", "sub"]);
+    let name_column = column(&["显示名", "name", "display"]);
+    let pick = |row: &[String], index: Option<usize>| -> String {
+        index
+            .and_then(|index| row.get(index))
+            .map(|value| value.trim().to_owned())
+            .unwrap_or_default()
+    };
+    let mut entries = Vec::new();
+    for (offset, row) in rows.iter().enumerate() {
+        let addr = pick(row, Some(addr_column));
+        if addr.is_empty() {
+            bail!("第 {} 行没有地址", offset + 2);
+        }
+        if !addr.contains(':') {
+            bail!(
+                "第 {} 行的地址缺少端口：{addr}（应用「地址:端口」）",
+                offset + 2
+            );
+        }
+        entries.push(Entry {
+            group: pick(row, group_column),
+            subgroup: pick(row, subgroup_column),
+            name: pick(row, name_column),
+            addr,
+        });
+    }
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -187,6 +309,66 @@ mod tests {
         let reloaded = AddressBook::load(&exported).expect("load exported");
         assert_eq!(reloaded.entries(), imported.entries());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn csv_roundtrips_entries() {
+        let mut book = AddressBook::default();
+        book.upsert(Entry {
+            group: "办公室".into(),
+            subgroup: "开发组".into(),
+            name: "工位-01".into(),
+            addr: "10.0.0.5:21118".into(),
+        });
+        let csv = book.to_csv();
+        let mut imported = AddressBook::default();
+        assert_eq!(imported.merge_csv(&csv).expect("merge"), 1);
+        assert_eq!(imported.entries(), book.entries());
+    }
+
+    #[test]
+    fn csv_handles_quoted_fields_and_english_header() {
+        let text = "group,subgroup,name,address\n\"机房, A\",机架,\"机器 \"\"甲\"\"\",10.0.0.9:21118\n";
+        let mut book = AddressBook::default();
+        assert_eq!(book.merge_csv(text).expect("merge"), 1);
+        let entry = book.get("10.0.0.9:21118").expect("entry");
+        assert_eq!(entry.group, "机房, A");
+        assert_eq!(entry.name, "机器 \"甲\"");
+    }
+
+    #[test]
+    fn csv_replaces_the_same_address() {
+        let mut book = AddressBook::default();
+        book.upsert(entry("10.0.0.5:21118", "old"));
+        let text = "组,子组,显示名,地址\n办公室,开发组,new,10.0.0.5:21118\n";
+        book.merge_csv(text).expect("merge");
+        assert_eq!(book.entries().len(), 1);
+        assert_eq!(book.get("10.0.0.5:21118").expect("entry").name, "new");
+    }
+
+    #[test]
+    fn csv_without_address_column_is_refused() {
+        let mut book = AddressBook::default();
+        let err = book.merge_csv("组,子组,显示名\n办公室,开发组,工位\n").unwrap_err();
+        assert!(err.to_string().contains("地址列"));
+    }
+
+    #[test]
+    fn csv_address_without_port_is_refused() {
+        let mut book = AddressBook::default();
+        let err = book
+            .merge_csv("组,子组,显示名,地址\n办公室,开发组,工位,10.0.0.5\n")
+            .unwrap_err();
+        assert!(err.to_string().contains("端口"), "{err}");
+    }
+
+    #[test]
+    fn csv_unbalanced_quote_is_refused() {
+        let mut book = AddressBook::default();
+        let err = book
+            .merge_csv("组,子组,显示名,地址\n\"办公室,开发组,工位,10.0.0.5:21118\n")
+            .unwrap_err();
+        assert!(err.to_string().contains("引号"), "{err}");
     }
 
     #[test]

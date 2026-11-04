@@ -31,6 +31,14 @@ pub struct LandeskConfig {
     pub key: Option<PathBuf>,
     /// 生成一对全局密钥对并写到该路径，打印公钥供 Service 绑定。
     pub genkey: Option<PathBuf>,
+    /// 导入地址簿：`.csv` 合并条目，`.json` 整份替换。
+    pub book_import: Option<PathBuf>,
+    /// 导出地址簿：按扩展名写 `.csv` 或 `.json`。
+    pub book_export: Option<PathBuf>,
+    /// 列出地址簿条目。
+    pub book_list: bool,
+    /// 把某个 `地址:端口` 标为已验证（操作者核过指纹之后）。
+    pub book_verify: Option<String>,
 }
 
 impl LandeskConfig {
@@ -64,6 +72,10 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut book = None;
     let mut key = None;
     let mut genkey = None;
+    let mut book_import = None;
+    let mut book_export = None;
+    let mut book_list = false;
+    let mut book_verify = None;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -108,11 +120,38 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 };
                 genkey = Some(PathBuf::from(value));
             }
+            "--landesk-book-import" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-book-import needs a path");
+                };
+                book_import = Some(PathBuf::from(value));
+            }
+            "--landesk-book-export" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-book-export needs a path");
+                };
+                book_export = Some(PathBuf::from(value));
+            }
+            "--landesk-book-list" => book_list = true,
+            "--landesk-book-verify" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-book-verify needs an address:port");
+                };
+                book_verify = Some(value);
+            }
             _ => rest.push(arg),
         }
     }
     *args = rest;
-    if listen_port.is_some() || auth_pk.is_some() || connect.is_some() || genkey.is_some() {
+    if listen_port.is_some()
+        || auth_pk.is_some()
+        || connect.is_some()
+        || genkey.is_some()
+        || book_import.is_some()
+        || book_export.is_some()
+        || book_list
+        || book_verify.is_some()
+    {
         CONFIG.get_or_init(|| LandeskConfig {
             listen_port,
             auth_pk,
@@ -120,7 +159,83 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             book,
             key,
             genkey,
+            book_import,
+            book_export,
+            book_list,
+            book_verify,
         });
+    }
+    Ok(())
+}
+
+/// 地址簿的读/导入/导出命令。都在拿到全量数据、校验通过之后才落盘。
+pub fn run_book_command(config: &LandeskConfig) -> ResultType<()> {
+    use crate::addressbook::AddressBook;
+
+    let book_path = config.book_path();
+    if let Some(source) = &config.book_import {
+        let is_csv = source
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("csv"))
+            .unwrap_or(false);
+        if is_csv {
+            let text = std::fs::read_to_string(source)
+                .map_err(|err| hbb_common::anyhow::anyhow!("reading {}: {err}", source.display()))?;
+            let mut book = AddressBook::load(&book_path)?;
+            let count = book.merge_csv(&text)?;
+            book.save(&book_path)?;
+            println!("导入 {count} 条，地址簿现有 {} 条：{}", book.entries().len(), book_path.display());
+        } else {
+            let book = AddressBook::import(source, &book_path)?;
+            println!("已导入整份地址簿（{} 条）：{}", book.entries().len(), book_path.display());
+        }
+    }
+
+    if let Some(target) = &config.book_export {
+        let book = AddressBook::load(&book_path)?;
+        let is_csv = target
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("csv"))
+            .unwrap_or(false);
+        if is_csv {
+            std::fs::write(target, book.to_csv())
+                .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", target.display()))?;
+        } else {
+            book.export(target)?;
+        }
+        println!("已导出 {} 条到 {}", book.entries().len(), target.display());
+    }
+
+    if let Some(addr) = &config.book_verify {
+        let mut book = AddressBook::load(&book_path)?;
+        if !book.mark_verified(addr) {
+            bail!("{addr} 不在指纹库里（先连一次再标记）");
+        }
+        book.save(&book_path)?;
+        println!(
+            "已把 {addr} 标为已验证（{}）",
+            book.fingerprint_of(addr).unwrap_or("?")
+        );
+    }
+
+    if config.book_list {
+        let book = AddressBook::load(&book_path)?;
+        if book.entries().is_empty() {
+            println!("地址簿为空：{}", book_path.display());
+        }
+        for entry in book.entries() {
+            let state = match book.pins().get(&entry.addr) {
+                None => "未连接过".to_owned(),
+                Some(host) if host.verified => format!("已验证 {}", host.fingerprint),
+                Some(host) => format!("未验证 {}", host.fingerprint),
+            };
+            println!(
+                "{}/{}\t{}\t{}\t{state}",
+                entry.group, entry.subgroup, entry.name, entry.addr
+            );
+        }
     }
     Ok(())
 }

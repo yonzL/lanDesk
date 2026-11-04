@@ -96,6 +96,20 @@ pub fn core_main() -> Option<CoreMainAction> {
     if let Err(err) = crate::landesk::take_from_args(&mut args) {
         return Some(CoreMainAction::ExitFailure(err));
     }
+    // landesk 的地址簿命令：导入 / 导出 / 列表。
+    if let Some(config) = crate::landesk::config() {
+        if config.book_import.is_some()
+            || config.book_export.is_some()
+            || config.book_list
+            || config.book_verify.is_some()
+        {
+            return match crate::landesk::run_book_command(config) {
+                Ok(()) => None,
+                Err(err) => Some(CoreMainAction::ExitFailure(err)),
+            };
+        }
+    }
+
     // landesk 的 Master 拨号模式：连一次、做完密钥证明、把指纹变化落盘，然后退出。
     if let Some(path) = crate::landesk::config().and_then(|config| config.genkey.clone()) {
         let keypair = hbb_common::keyauth::GlobalKeyPair::generate();
