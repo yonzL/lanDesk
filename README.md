@@ -35,19 +35,43 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 ## 状态
 
-早期：仓库当前是上游基线与设计文档，**尚未有 landesk 自己的代码**。公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，随对应的功能替换逐块移除，而不是一次性删掉——它们的删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
+早期。已有：设计文档、RustDesk 基线、`libs/hbb_common` 里的 `keyauth`（挑战—验签 + 主机指纹，含 12 个单测，已接真实 socket 往返），以及一个 `hbb_common` 的 CI 闸门。
+
+未有：主 crate 里的 Service 接线（`--landesk-listen` / `--landesk-auth-key` 与鉴权调用点）、安装器与服务自启、Master 界面。公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，随对应的功能替换逐块移除，而不是一次性删掉——它们的删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
 
 ## 构建
 
-仅目标 Windows。完整构建需要 Rust 工具链、Flutter（Master 界面）与 vcpkg 提供的原生依赖。
-
-当前可验证的只有 `libs/hbb_common`（landesk 唯一要改的共享协议库）：
+仅目标 Windows。完整构建需要 Rust 工具链、Flutter（Master 界面）、`libclang`（部分构建脚本用 bindgen 生成绑定）与 vcpkg 提供的原生依赖。
 
 ```bash
-cargo check -p hbb_common --all-targets
+cargo check -p hbb_common --all-targets   # landesk 唯一改动的共享协议库
+cargo check -p rustdesk --lib             # 主 crate
 ```
 
-CI（`.github/workflows/ci.yml`）在 `windows-latest` 上跑这一条；主 crate 的构建闸门在裁剪到仅剩 Service 目标后再加进来。
+CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 crate 的闸门要等裁剪到仅剩 Service 目标后再加。
+
+### 大陆网络下的前置条件
+
+上游的依赖图里有一批只存在于 GitHub 的 git 源，还有一个挂在 `chromium.googlesource.com` 上的子模块。直连环境下这些都不通，以下配置已在本机验证可用（**不入库**，属于个人环境）：
+
+| 阻碍 | 做法 |
+|---|---|
+| crates.io 约 25KB/s | `~/.cargo/config.toml` 里把 `source.crates-io` 换成 `sparse+https://mirrors.ustc.edu.cn/crates.io-index/`（实测约 220KB/s） |
+| GitHub 的 git 源握手失败（schannel） | 环境变量 `GIT_CONFIG_*` 注入 `http.sslBackend=openssl`，并 `url.https://ghfast.top/https://github.com/.insteadOf=https://github.com/` 走可用代理 |
+| `chromium.googlesource.com/webm/libwebm` 子模块 | `url.https://github.com/webmproject/libwebm.insteadOf=https://chromium.googlesource.com/webm/libwebm`；官方 GitHub 镜像包含该提交 |
+| bindgen 找不到 libclang | 安装 LLVM 并设 `LIBCLANG_PATH` 到其 `bin` 目录 |
+
+完整的一条命令（示例值按自己的代理端口改）：
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
+  GIT_CONFIG_COUNT=3 \
+  GIT_CONFIG_KEY_0=http.sslBackend GIT_CONFIG_VALUE_0=openssl \
+  GIT_CONFIG_KEY_1=url.https://ghfast.top/https://github.com/.insteadOf GIT_CONFIG_VALUE_1=https://github.com/ \
+  GIT_CONFIG_KEY_2=url.https://github.com/webmproject/libwebm.insteadOf GIT_CONFIG_VALUE_2=https://chromium.googlesource.com/webm/libwebm \
+  LIBCLANG_PATH="/c/Program Files/LLVM/bin"
+cargo check -p rustdesk --lib
+```
 
 ## 许可
 
