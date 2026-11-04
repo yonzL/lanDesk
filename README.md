@@ -33,16 +33,21 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 需要重新比对上游时，用同 SHA 从镜像取一份源码即可，不必修改本仓库的历史。
 
+## 状态
+
+早期：仓库当前是上游基线与设计文档，**尚未有 landesk 自己的代码**。公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，随对应的功能替换逐块移除，而不是一次性删掉——它们的删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
+
 ## 构建
 
-仅目标 Windows。需要 Rust 工具链与 Flutter（Master 界面）。
+仅目标 Windows。完整构建需要 Rust 工具链、Flutter（Master 界面）与 vcpkg 提供的原生依赖。
+
+当前可验证的只有 `libs/hbb_common`（landesk 唯一要改的共享协议库）：
 
 ```bash
-cargo build --release           # Service 与 Master 的 Rust 内核
-flutter build windows --release # Master 界面
+cargo check -p hbb_common --all-targets
 ```
 
-> 基线导入后的具体构建命令随实际裁剪结果调整。
+CI（`.github/workflows/ci.yml`）在 `windows-latest` 上跑这一条；主 crate 的构建闸门在裁剪到仅剩 Service 目标后再加进来。
 
 ## 许可
 
