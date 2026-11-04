@@ -40,9 +40,9 @@ landesk 不重写 RustDesk 的会话协议。视频、输入、剪贴板、文�
 | 密钥 | 谁持有 | 证明什么 | 泄露后果 |
 |---|---|---|---|
 | 全局私钥 / 绑定公钥 | Master 持有私钥；每台 Service 绑定同一把公钥 | "来连接的人持有那把私钥" | 全网通行证：需要给所有机器换公钥 |
-| 主机密钥（每台一对） | Service 持有私钥；Master 地址簿记其指纹 | "对面这台确实是地址簿里那台机器" | 只影响该机器的指纹，可逐台重置 |
+| 主机密钥（每台一对） | Service 持有私钥；在 `AuthNonce` 里带上公钥并对挑战签名 | "对面这台确实是地址簿里那台机器" | 只影响该机器的指纹，可逐台重置 |
 
-主机密钥不经过 CSV、不需要人工分发：属于首次信任，而不是清单的一部分。
+主机密钥不经过 CSV、不需要人工分发：属于首次信任（Master 验完签名后把公钥钉进地址簿，标记为未验证）。因为 `SignedId` 里没有验签所需的公钥，主机身份必须由握手自己带出来——这也是不用 hbbs 后唯一可行的位置。
 
 ## 会话仲裁：一个控制令牌，多个观察者
 
@@ -97,19 +97,27 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 - 开关：`--landesk-listen [port]`（缺省 `21118`）与 `--landesk-auth-key <hex>`。两者都不给时是空操作，上游 rendezvous 路径不受影响；给了就进入 landesk 模式。
 - 公钥的文本形式是**小写十六进制**，与指纹表示同一套字符；不用 base64。
-- 握手顺序：先走上游 Kx（Service 用自己的主机密钥签 `KeyExchange`），成功后 Service 在 AEAD 通道上发 `AuthNonce`，Master 回 `AuthProof`（签名覆盖 `AUTH_DOMAIN ‖ transcript_digest ‖ nonce`）。证明不过即在任何会话消息前断开。
-- 被拒时只留一行：`landesk: reject <no-bound-key|bad-signature|host-fingerprint-mismatch|no-proof-yet> from <地址>`。
+- 握手顺序：先走上游 Kx（Service 用自己的主机密钥签 `KeyExchange`），成功后 Service 在 AEAD 通道上发 `AuthNonce`（携带自己的主机公钥 + 主机签名），Master 验主机证明并按指纹库判定，再回 `AuthProof`；Service 验签通过后回 `AuthOk`，Master 收到回执才算连成。证明不过即在任何会话消息前断开。
+- 被拒时只留一行：`landesk: reject <no-bound-key|bad-signature|host-fingerprint-mismatch|bad-host-proof|version-mismatch|no-proof-yet> from <地址>`。
 - 未绑定公钥时**连 Kx 都不做**，直接拒。
+- 配置了监听端口时**不启动上游 rendezvous**，并由监听本身维持进程存活（上游原本靠那条永不返回的循环活着）。
+
+### 落地形态（Master 侧）
+
+- `--landesk-genkey <path>`：生成全局密钥对，打印公钥供 Service 绑定。
+- `--landesk-connect <addr:port>`：拨号、验主机身份、回证明、把指纹变化落盘，然后退出——图形界面接管前的命令行形态。
+- 地址簿：`addressbook.json` 在可执行文件同目录（`--landesk-book` 可改），条目为 `组/子组/显示名/地址:端口`，指纹库内嵌在同一份文件里；导入导出就是整份文件的进出。
+- 私钥：`private.key` 在可执行文件同目录（`--landesk-key` 可改），保护靠文件系统 ACL——与 Veyon 同一路子（它用 `keys/public` 与 `keys/private` 两个目录、每个密钥一个子目录，就为了能分别设权限）；DPAPI 是可选的加固，不是缺口。
 
 
 `libs/hbb_common` 从上游的 git 子模块改为**内置目录**：landesk 要在它的 protobuf 定义里加握手消息，若仍跟随上游子模块，任何上游改动都会与本地的协议扩展相撞。这也是唯一一处 landesk 必须改动共享协议库的地方。
 
 ## 不变量
 
-- **无出站**：Service 除应答外不发起任何连接；任何 hbbs/hbbr/updater 调用都是缺陷。
+- **无出站**：Service 除应答外不发起任何连接；任何 hbbs/hbbr/updater 调用都是缺陷。landesk 模式下以跳过 `RendezvousMediator` 落实，日志里应出现 `landesk: skipping the rendezvous mediator`。
 - **证明先于会话**：`AuthProof` 验证通过之前，Service 不接受任何会话消息；拒绝日志恰好一行。
 - **服务端强制**：观察者的输入、剪贴板、文件消息在 Service 侧被丢弃；权限判断只有 `arbiter` 一处。
-- **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中；静态加密走 DPAPI（**尚未实现，私钥目前只靠文件 ACL**——已知遗留）。
+- **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中；保护靠文件系统 ACL（DPAPI 为可选加固，尚未实现）。
 - **单控制令牌**：同一台 Service 任何时刻至多一个控制者，抢占是原子的降级而非并行。
 - **分组无权限**：组/子组只影响 Master 侧怎么找机器，不进入任何授权判断。
 - **凭据不入库**：landesk 不持有任何 Windows 账号；登录界面上的输入是人打的。

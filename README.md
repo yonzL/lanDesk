@@ -35,9 +35,9 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 ## 状态
 
-早期。已有：设计文档、RustDesk 基线、`libs/hbb_common` 里的 `keyauth`（挑战—验签 + 主机指纹，12 个单测含真实 socket 往返），以及 **Service 侧的直连监听与鉴权**（`--landesk-listen` / `--landesk-auth-key`，`src/transport.rs` + `src/landesk.rs`）。
+早期，但核心链路已通。已有：设计文档、RustDesk 基线、`libs/hbb_common` 里的双向 `keyauth`（主机身份 + 全局私钥证明 + TOFU 指纹），以及 **Service 监听与 Master 拨号**的完整往返——同机双进程已验证：持钥两连成功、错钥与指纹变更均被拒，且 Service 不再向任何协调服务注册。
 
-未有：Master 侧拨号与地址簿（因此还没有端到端的双进程冒烟）、安装器与服务自启、图形界面、观察者/抢占仲裁。公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，随对应的功能替换逐块移除，而不是一次性删掉——它们的删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
+未有：图形界面（目前只有命令行 `--landesk-connect`）、CSV 导入、观察者/抢占仲裁（`arbiter`）、安装器与服务自启。公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，但 landesk 模式已不再启动它们；彻底删除随对应的功能替换逐块进行——它们的删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
 
 ## 构建
 
