@@ -9,11 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use base::message_proto::*;
 use hbb_common::rendezvous_proto::ConnType;
-use hbb_common::tokio::sync::mpsc;
 use hbb_common::{log, ResultType};
 
 use crate::client::helper::QualityStatus;
-use crate::client::Data;
 use crate::ui_session_interface::{InvokeUiSession, Session};
 
 
@@ -58,6 +56,14 @@ pub struct LandeskUi {
     seq: Arc<std::sync::atomic::AtomicU64>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
+    last_progress: Arc<Mutex<u32>>,
+}
+
+impl LandeskUi {
+    fn note(&self, message: String) {
+        log::info!("landesk: {message}");
+        self.messages.lock().unwrap().push(message);
+    }
 }
 
 impl InvokeUiSession for LandeskUi {
@@ -82,8 +88,12 @@ impl InvokeUiSession for LandeskUi {
     fn update_quality_status(&self, _qs: QualityStatus) {}
     fn set_connection_type(&self, _is_secured: bool, _direct: bool, _stream_type: &str) {}
     fn set_fingerprint(&self, _fingerprint: String) {}
-    fn job_error(&self, _id: i32, _err: String, _file_num: i32) {}
-    fn job_done(&self, _id: i32, _file_num: i32) {}
+    fn job_error(&self, _id: i32, err: String, _file_num: i32) {
+        self.note(format!("文件传输失败：{err}"));
+    }
+    fn job_done(&self, _id: i32, file_num: i32) {
+        self.note(format!("文件传输完成（{file_num} 个文件）"));
+    }
     fn clear_all_jobs(&self) {}
     fn new_message(&self, _msg: String) {}
     fn update_transfer_list(&self) {}
@@ -108,7 +118,15 @@ impl InvokeUiSession for LandeskUi {
     ) {
     }
     fn update_block_input_state(&self, _on: bool) {}
-    fn job_progress(&self, _id: i32, _file_num: i32, _speed: f64, _finished_size: f64) {}
+    fn job_progress(&self, _id: i32, _file_num: i32, speed: f64, finished_size: f64) {
+        // 只按 10% 台阶报进度，不然日志会被刷满。
+        let percent = (finished_size / 10_000.0) as u32;
+        let mut last = self.last_progress.lock().unwrap();
+        if percent >= *last + 10 {
+            *last = percent;
+            self.note(format!("传输中：约 {percent}%（{:.1} KB/s）", speed));
+        }
+    }
     fn adapt_size(&self) {}
     fn on_rgba(&self, display: usize, rgba: &mut scrap::ImageRgb) {
         let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -233,6 +251,7 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
         seq: Default::default(),
         messages: messages.clone(),
         displays: displays.clone(),
+        last_progress: Default::default(),
     };
     session.lc.write().unwrap().initialize(
         peer.clone(),
@@ -252,22 +271,10 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
         session: session.clone(),
     };
 
-    let (sender, receiver) = mpsc::unbounded_channel::<Data>();
     std::thread::spawn(move || {
-        let runtime = match hbb_common::tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                log::error!("landesk: cannot start the session runtime: {err}");
-                return;
-            }
-        };
-        runtime.block_on(async move {
-            let mut remote = crate::client::io_loop::Remote::new(session, receiver, sender);
-            remote.io_loop("", "", 0).await;
-        });
+        // 用上游真正的会话入口：它会建好 Data 通道并把 `handler.sender` 接上。
+        // （直接用内层 `Remote` 会让 `Session::send` 静默丢弃，输入与文件都发不出去。）
+        crate::ui_session_interface::io_loop(session, 0);
         closed.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     Ok(handle)
