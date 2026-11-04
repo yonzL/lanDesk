@@ -45,6 +45,7 @@ struct App {
     remote_size: (usize, usize),
     last_pointer: Option<(i32, i32)>,
     last_modifiers: egui::Modifiers,
+    current_display: i32,
 }
 
 impl App {
@@ -63,6 +64,7 @@ impl App {
             remote_size: (0, 0),
             last_pointer: None,
             last_modifiers: egui::Modifiers::NONE,
+            current_display: 0,
         };
         app.reload();
         app
@@ -460,6 +462,31 @@ impl eframe::App for App {
                     ui.label(format!("远端：{peer}"));
                     let (state, _) = self.pin_state(&peer);
                     ui.label(format!("主机指纹：{state}"));
+                    // 对端有不止一块屏时给个切换；切换后等新屏的第一帧。
+                    let displays = self
+                        .session
+                        .as_ref()
+                        .map(|session| session.displays())
+                        .unwrap_or_default();
+                    if displays.len() > 1 {
+                        ui.separator();
+                        ui.label("屏幕：");
+                        for (index, width, height) in displays {
+                            let label = format!("#{} {}x{}", index + 1, width, height);
+                            if ui
+                                .selectable_label(self.current_display == index, label)
+                                .clicked()
+                                && self.current_display != index
+                            {
+                                self.current_display = index;
+                                self.texture = None;
+                                self.last_frame_seq = 0;
+                                if let Some(session) = &self.session {
+                                    session.switch_display(index);
+                                }
+                            }
+                        }
+                    }
                 });
                 ui.separator();
                 self.draw_remote(ui);
