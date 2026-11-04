@@ -84,21 +84,32 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 新增（只依赖 `hbb_common`）：
 
-| 模块 | 职责 |
-|---|---|
-| `keyauth` | 双挑战签名、TOFU 指纹比对与存储、X25519 派生会话密钥。握手前置层的唯一实现处。 |
-| `arbiter` | 控制令牌、观察者列表、抢占降级、能力矩阵。Service 侧唯一的权限判断点。 |
-| `transport` | 直连监听与拨号，取代 `rendezvous_mediator` 的连接建立职责。 |
-| `addressbook` | 两级组、条目（地址:端口）、指纹、CSV 导入（按「地址:端口」upsert，一个事务内）。 |
-| `svcsetup` | 安装期：注册 Windows 服务、写入绑定公钥与端口、启动。 |
+| 模块 | 职责 | 位置 |
+|---|---|---|
+| `keyauth` | 挑战—签名—验签、TOFU 指纹与指纹库、transcript 摘要、拒绝原因与日志行 | `libs/hbb_common/src/keyauth.rs` |
+| `arbiter` | 控制令牌、观察者列表、抢占降级、能力矩阵。Service 侧唯一的权限判断点。 | 未开始 |
+| `transport` | 直连监听：固定端口接受连接，交给会话层 | `src/transport.rs` |
+| `landesk` | Service 侧配置（监听端口、绑定公钥）与鉴权执行点 | `src/landesk.rs` |
+| `addressbook` | 两级组、条目（地址:端口）、指纹、CSV 导入（按「地址:端口」upsert，一个事务内）。 | 未开始 |
+| `svcsetup` | 安装期：注册 Windows 服务、写入绑定公钥与端口、启动。 | 未开始 |
+
+### 落地形态（Service 侧）
+
+- 开关：`--landesk-listen [port]`（缺省 `21118`）与 `--landesk-auth-key <hex>`。两者都不给时是空操作，上游 rendezvous 路径不受影响；给了就进入 landesk 模式。
+- 公钥的文本形式是**小写十六进制**，与指纹表示同一套字符；不用 base64。
+- 握手顺序：先走上游 Kx（Service 用自己的主机密钥签 `KeyExchange`），成功后 Service 在 AEAD 通道上发 `AuthNonce`，Master 回 `AuthProof`（签名覆盖 `AUTH_DOMAIN ‖ transcript_digest ‖ nonce`）。证明不过即在任何会话消息前断开。
+- 被拒时只留一行：`landesk: reject <no-bound-key|bad-signature|host-fingerprint-mismatch|no-proof-yet> from <地址>`。
+- 未绑定公钥时**连 Kx 都不做**，直接拒。
+
 
 `libs/hbb_common` 从上游的 git 子模块改为**内置目录**：landesk 要在它的 protobuf 定义里加握手消息，若仍跟随上游子模块，任何上游改动都会与本地的协议扩展相撞。这也是唯一一处 landesk 必须改动共享协议库的地方。
 
 ## 不变量
 
 - **无出站**：Service 除应答外不发起任何连接；任何 hbbs/hbbr/updater 调用都是缺陷。
+- **证明先于会话**：`AuthProof` 验证通过之前，Service 不接受任何会话消息；拒绝日志恰好一行。
 - **服务端强制**：观察者的输入、剪贴板、文件消息在 Service 侧被丢弃；权限判断只有 `arbiter` 一处。
-- **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中；静态加密走 DPAPI。
+- **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中；静态加密走 DPAPI（**尚未实现，私钥目前只靠文件 ACL**——已知遗留）。
 - **单控制令牌**：同一台 Service 任何时刻至多一个控制者，抢占是原子的降级而非并行。
 - **分组无权限**：组/子组只影响 Master 侧怎么找机器，不进入任何授权判断。
 - **凭据不入库**：landesk 不持有任何 Windows 账号；登录界面上的输入是人打的。
