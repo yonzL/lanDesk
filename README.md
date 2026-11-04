@@ -22,6 +22,17 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 由此继承 RustDesk 的 **AGPL-3.0** 许可，见 [`LICENCE`](LICENCE)。
 
+### 基线
+
+| 项 | 值 |
+|---|---|
+| 上游提交 | `23e5bb471a040d62f0a6ad52591fb30784265b73`（2026-11-01，`rustdesk/rustdesk` master） |
+| 获取方式 | 经 `gitee.com/mirrors/rustdesk` 镜像（镜像保留上游 SHA）；直连 GitHub 在当前网络下拉完整树不可行 |
+| 导入形式 | 单次基线提交，未携带上游提交历史；后续裁剪以普通提交叠加 |
+| `libs/hbb_common` | 由上游子模块改为内置目录，固定在上游 `fae47e024dd83cef6aaecde0aa7d11731df11649`，`.gitmodules` 已移除 |
+
+需要重新比对上游时，用同 SHA 从镜像取一份源码即可，不必修改本仓库的历史。
+
 ## 构建
 
 仅目标 Windows。需要 Rust 工具链与 Flutter（Master 界面）。
