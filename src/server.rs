@@ -228,11 +228,15 @@ pub async fn create_tcp_connection(
     };
     // Before the handshake, so its read is bounded too; lifted again at authorization.
     stream.set_max_packet_length(MAX_UNAUTHORIZED_MESSAGE);
-    tokio::select! {
+    let transcript = tokio::select! {
         handshake = identity_handshake(&mut stream, secure) => handshake?,
         _ = unauthorized.evicted() => {
             bail!("evicted to make room for a newer unauthenticated connection");
         }
+    };
+    // landesk: 密钥交换之后、任何会话消息之前要求 Master 证明自己。未配置时是空操作。
+    if let Some(transcript) = transcript {
+        crate::landesk::enforce(&mut stream, &transcript, addr).await?;
     }
 
     #[cfg(target_os = "macos")]
@@ -261,7 +265,9 @@ pub async fn create_tcp_connection(
 
 /// Our signed identity goes out and, when `secure`, the controller's reply keys `stream`.
 /// Separate so it can be raced against the connection's eviction.
-async fn identity_handshake(stream: &mut Stream, secure: bool) -> ResultType<()> {
+async fn identity_handshake(stream: &mut Stream, secure: bool) -> ResultType<Option<[u8; 32]>> {
+    // landesk: 握手成功时把 transcript 摘要交出去，后续的密钥鉴权要绑定到这一次交换上。
+    let mut transcript = None;
     let (sk, pk) = Config::get_key_pair();
     if secure && pk.len() == sign::PUBLICKEYBYTES && sk.len() == sign::SECRETKEYBYTES {
         let mut sk_ = [0u8; sign::SECRETKEYBYTES];
@@ -331,6 +337,12 @@ async fn identity_handshake(stream: &mut Stream, secure: bool) -> ResultType<()>
                                     picked: pk.kx_version,
                                 },
                             )?;
+                            transcript = Some(hbb_common::keyauth::transcript_digest(
+                                &pk.asymmetric_value,
+                                &our_pk_b.0,
+                                advertised,
+                                pk.kx_version,
+                            ));
                         } else if pk.asymmetric_value.is_empty() {
                             Config::set_key_confirmed(false);
                             log::info!("Force to update pk");
@@ -350,7 +362,7 @@ async fn identity_handshake(stream: &mut Stream, secure: bool) -> ResultType<()>
         }
     }
 
-    Ok(())
+    Ok(transcript)
 }
 
 pub(crate) async fn accept_connection(
@@ -677,6 +689,14 @@ pub async fn start_server(is_server: bool, no_server: bool) {
 
     if is_server {
         crate::common::set_server_running(true);
+        // landesk: 配置了监听端口就起一条直连监听，不依赖任何协调服务。
+        if let Some(port) = crate::landesk::config().and_then(|config| config.listen_port) {
+            tokio::spawn(async move {
+                if let Err(err) = crate::transport::start(port).await {
+                    log::error!("landesk: listener stopped: {err}");
+                }
+            });
+        }
         std::thread::spawn(move || {
             if let Err(err) = crate::ipc::start("") {
                 log::error!("Failed to start ipc: {}", err);

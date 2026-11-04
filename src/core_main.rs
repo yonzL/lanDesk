@@ -93,6 +93,9 @@ pub fn core_main() -> Option<CoreMainAction> {
         }
         i += 1;
     }
+    if let Err(err) = crate::landesk::take_from_args(&mut args) {
+        return Some(CoreMainAction::ExitFailure(err));
+    }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if args.is_empty() {
         #[cfg(target_os = "linux")]
