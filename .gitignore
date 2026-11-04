@@ -60,3 +60,6 @@ flutter/web/
 /third_party/libdrmtap/
 # Local git worktrees
 .worktrees/
+
+# 打包产物
+dist/

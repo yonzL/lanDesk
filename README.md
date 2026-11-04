@@ -43,12 +43,16 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 ## 构建
 
-仅目标 Windows。完整构建需要 Rust 工具链、Flutter（Master 界面）、`libclang`（部分构建脚本用 bindgen 生成绑定）与 vcpkg 提供的原生依赖。
+仅目标 Windows。完整构建需要 Rust 工具链、`libclang`（`kcp-sys` 用 bindgen）与 vcpkg 的 `opus`/`libvpx`/`aom`/`libyuv`。Flutter 只有想做上游那套界面时才需要；landesk 自己的界面是纯 Rust。
 
 ```bash
-cargo check -p hbb_common --all-targets   # landesk 唯一改动的共享协议库
-cargo check -p rustdesk --lib             # 主 crate
+cargo check -p hbb_common --all-targets          # landesk 唯一改动的共享协议库
+cargo build -p rustdesk --bin rustdesk -p landesk-gui
+cargo test  -p rustdesk --test session_smoke     # 端到端：真的收到一帧画面
+bash scripts/dist.sh                            # 打一个可拷给别人的包（需先 --release）
 ```
+
+静态 CRT + 静态 vcpkg，所以打包出来就是两个 exe，不依赖 DLL。`rustdesk.exe` 的双击启动会去拉起上游的 sciter 界面，需要 `sciter.dll`——landesk 模式下不要双击它，只用 `--server` / `--landesk-*` 这些参数。
 
 CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 crate 的闸门要等裁剪到仅剩 Service 目标后再加。
 

@@ -68,6 +68,10 @@ if command -v zip > /dev/null 2>&1; then
     (cd dist && zip -qr "landesk-$STAMP.zip" "landesk-$STAMP")
     echo "产物：dist/landesk-$STAMP.zip"
 else
-    echo "产物：$OUT/（未压缩；系统里没有 zip 命令）"
+    if powershell -NoProfile -Command "Compress-Archive -Path '$OUT' -DestinationPath 'dist/landesk-$STAMP.zip' -Force"; then
+        echo "产物：dist/landesk-$STAMP.zip"
+    else
+        echo "产物：$OUT/（未压缩）"
+    fi
 fi
 ls -la "$OUT"
