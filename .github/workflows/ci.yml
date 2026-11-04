@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # landesk 唯一必须改动的共享协议库（握手消息要加进它的 protobuf 定义），
+  # 所以先把它变成每次提交都可验证的闸门。
+  hbb-common:
+    name: cargo check / hbb_common
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libs/hbb_common
+      - name: cargo check -p hbb_common --all-targets
+        run: cargo check -p hbb_common --all-targets
+
+# 主 crate（rustdesk 本体）暂不在此验证：它需要 vcpkg 提供的原生依赖与 Flutter
+# 生成的产物，且依赖里有一批 github.com/rustdesk-org 的 git 源。等裁剪到只剩
+# Service 目标时再把它加进来，作为“无出站”不变量的守卫。
