@@ -116,6 +116,17 @@ rustdesk.exe --landesk-book-verify 10.0.0.5:21118 # 首次连过、核过指纹�
 | `host-fingerprint-mismatch` | 这台机器的主机密钥变了：查地址簿里的指纹，确认后删掉该条重连 |
 | `no-proof-yet` | 握手没走完（超时或对端不听 landesk） |
 
+**装成开机自启的服务（被控机，管理员权限）：**
+
+```bash
+# 1. 先把参数落成配置：写到 exe 同目录的 landesk.json
+rustdesk.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-key <公钥十六进制>
+# 2. 装成 Windows 服务（上游自带，无需额外安装包）
+rustdesk.exe --install-service
+```
+
+服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `rustdesk.exe --server` 也会读它。`landesk.json` 里就是两项：`listen_port` 与 `auth_key`。
+
 **本机自测（不用两台机器）：**
 
 ```bash

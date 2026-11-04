@@ -39,6 +39,8 @@ pub struct LandeskConfig {
     pub book_list: bool,
     /// 把某个 `地址:端口` 标为已验证（操作者核过指纹之后）。
     pub book_verify: Option<String>,
+    /// 把当前参数写成可执行文件同目录的 `landesk.json`（服务开机自启动时读它）。
+    pub save_config: bool,
 }
 
 impl LandeskConfig {
@@ -76,6 +78,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut book_export = None;
     let mut book_list = false;
     let mut book_verify = None;
+    let mut save_config = false;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -139,10 +142,20 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 };
                 book_verify = Some(value);
             }
+            "--landesk-save-config" => save_config = true,
             _ => rest.push(arg),
         }
     }
     *args = rest;
+    // 命令行没给 landesk 参数时，读可执行文件同目录的 landesk.json。
+    // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
+    if listen_port.is_none() && auth_pk.is_none() {
+        if let Some((port, pk)) = load_config_file() {
+            listen_port = port;
+            auth_pk = pk;
+        }
+    }
+
     if listen_port.is_some()
         || auth_pk.is_some()
         || connect.is_some()
@@ -151,6 +164,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || book_export.is_some()
         || book_list
         || book_verify.is_some()
+        || save_config
     {
         CONFIG.get_or_init(|| LandeskConfig {
             listen_port,
@@ -163,9 +177,54 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             book_export,
             book_list,
             book_verify,
+            save_config,
         });
     }
     Ok(())
+}
+
+/// `landesk.json` 的形状：服务开机自启时读的那份配置。
+#[derive(Debug, Default, serde_derive::Serialize, serde_derive::Deserialize)]
+struct ConfigFile {
+    #[serde(default)]
+    listen_port: Option<u16>,
+    #[serde(default)]
+    auth_key: Option<String>,
+}
+
+fn config_file_path() -> PathBuf {
+    exe_dir().join("landesk.json")
+}
+
+fn load_config_file() -> Option<(Option<u16>, Option<sign::PublicKey>)> {
+    let text = std::fs::read_to_string(config_file_path()).ok()?;
+    let file: ConfigFile = serde_json::from_str(&text).ok()?;
+    let auth_pk = file
+        .auth_key
+        .as_deref()
+        .and_then(|key| parse_public_key(key).ok());
+    if file.listen_port.is_none() && auth_pk.is_none() {
+        None
+    } else {
+        Some((file.listen_port, auth_pk))
+    }
+}
+
+/// 把当前配置写到可执行文件同目录，返回文件路径。
+pub fn save_config_file(config: &LandeskConfig) -> ResultType<PathBuf> {
+    let path = config_file_path();
+    let file = ConfigFile {
+        listen_port: config.listen_port,
+        auth_key: config.auth_pk.as_ref().map(public_key_hex),
+    };
+    if file.listen_port.is_none() && file.auth_key.is_none() {
+        bail!("--landesk-save-config 需要同时给 --landesk-listen 或 --landesk-auth-key");
+    }
+    let text = serde_json::to_string_pretty(&file)
+        .map_err(|err| hbb_common::anyhow::anyhow!("serializing landesk.json: {err}"))?;
+    std::fs::write(&path, text)
+        .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", path.display()))?;
+    Ok(path)
 }
 
 /// 地址簿的读/导入/导出命令。都在拿到全量数据、校验通过之后才落盘。
