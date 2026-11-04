@@ -689,14 +689,7 @@ pub async fn start_server(is_server: bool, no_server: bool) {
 
     if is_server {
         crate::common::set_server_running(true);
-        // landesk: 配置了监听端口就起一条直连监听，不依赖任何协调服务。
-        if let Some(port) = crate::landesk::config().and_then(|config| config.listen_port) {
-            tokio::spawn(async move {
-                if let Err(err) = crate::transport::start(port).await {
-                    log::error!("landesk: listener stopped: {err}");
-                }
-            });
-        }
+        // landesk: 配置了监听端口就接管网络入口（下面直接 await 监听，进程因此存活）。
         std::thread::spawn(move || {
             if let Err(err) = crate::ipc::start("") {
                 log::error!("Failed to start ipc: {}", err);
@@ -738,7 +731,18 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         crate::platform::try_kill_broker();
         #[cfg(feature = "hwcodec")]
         scrap::hwcodec::start_check_process();
-        crate::RendezvousMediator::start_all().await;
+        if crate::landesk::takes_over_network() {
+            // 无出站：landesk 自己监听、自己鉴权，不向任何协调服务注册。
+            log::info!("landesk: skipping the rendezvous mediator (no outbound coordination)");
+            // 上游原本靠这条永不返回的循环维持进程存活，这里由监听接管。
+            if let Some(port) = crate::landesk::config().and_then(|config| config.listen_port) {
+                if let Err(err) = crate::transport::start(port).await {
+                    log::error!("landesk: listener stopped: {err}");
+                }
+            }
+        } else {
+            crate::RendezvousMediator::start_all().await;
+        }
     } else {
         match crate::ipc::connect(1000, "").await {
             Ok(mut conn) => {

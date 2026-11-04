@@ -14,7 +14,6 @@ use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sodiumoxide::crypto::sign;
 
-use crate::ResultType;
 
 /// 认证协议版本，与 `AuthNonce.version` 对应；两端不一致时拒绝，不降级。
 pub const AUTH_VERSION: u32 = 1;
@@ -25,6 +24,9 @@ pub const AUTH_DOMAIN: &[u8] = b"landesk-auth-v1";
 
 /// 挑战长度。
 pub const NONCE_LEN: usize = 32;
+
+/// 主机证明的域前缀，与 Master 证明分开：两把钥匙、两种语义，不能互相冒充。
+pub const HOST_DOMAIN: &[u8] = b"landesk-host-v1";
 
 /// Master 持有的全局密钥对。所有 Master 共用同一把私钥，所有 Service 绑同一把公钥。
 pub struct GlobalKeyPair {
@@ -95,8 +97,12 @@ pub fn transcript_digest(
 }
 
 fn signed_payload(transcript: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(AUTH_DOMAIN.len() + transcript.len() + nonce.len());
-    payload.extend_from_slice(AUTH_DOMAIN);
+    domain_payload(AUTH_DOMAIN, transcript, nonce)
+}
+
+fn domain_payload(domain: &[u8], transcript: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(domain.len() + transcript.len() + nonce.len());
+    payload.extend_from_slice(domain);
     payload.extend_from_slice(transcript);
     payload.extend_from_slice(nonce);
     payload
@@ -107,6 +113,27 @@ pub fn new_nonce() -> [u8; NONCE_LEN] {
     let mut nonce = [0u8; NONCE_LEN];
     sodiumoxide::randombytes::randombytes_into(&mut nonce);
     nonce
+}
+
+/// Service 侧：用主机私钥对同一次挑战签名，证明"我是那把主机密钥的主人"。
+pub fn sign_host(sk: &sign::SecretKey, transcript: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
+    sign::sign(&domain_payload(HOST_DOMAIN, transcript, nonce), sk)
+}
+
+/// Master 侧：验证主机证明。主机公钥由 Service 在挑战里给出，是否可信由指纹库（TOFU）回答。
+pub fn verify_host(
+    host_pk: &sign::PublicKey,
+    transcript: &[u8; 32],
+    nonce: &[u8],
+    proof: &[u8],
+) -> std::result::Result<(), RejectReason> {
+    if nonce.len() != NONCE_LEN {
+        return Err(RejectReason::BadHostProof);
+    }
+    match sign::verify(proof, host_pk) {
+        Ok(message) if message == domain_payload(HOST_DOMAIN, transcript, nonce) => Ok(()),
+        _ => Err(RejectReason::BadHostProof),
+    }
 }
 
 /// Master 侧：对 transcript 摘要与挑战签名。
@@ -142,6 +169,10 @@ pub enum RejectReason {
     BadSignature,
     /// 对面给的主机公钥与地址簿里钉住的不一致。
     HostFingerprintMismatch,
+    /// 主机证明不成立：主机私钥不对，或被改过挑战。
+    BadHostProof,
+    /// 认证协议版本不一致。
+    VersionMismatch,
     /// 证明到达之前就收到了会话消息。
     NoProofYet,
 }
@@ -152,6 +183,8 @@ impl RejectReason {
             Self::NoBoundKey => "no-bound-key",
             Self::BadSignature => "bad-signature",
             Self::HostFingerprintMismatch => "host-fingerprint-mismatch",
+            Self::BadHostProof => "bad-host-proof",
+            Self::VersionMismatch => "version-mismatch",
             Self::NoProofYet => "no-proof-yet",
         }
     }
@@ -264,10 +297,13 @@ pub const AUTH_TIMEOUT_MS: u64 = 10_000;
 
 /// Service 侧：在已建立（已加密）的通道上发挑战并验签。
 ///
+/// 挑战里带上自己的主机公钥与主机签名，Master 据此判断对面是不是它认识的那台机器。
 /// 未绑定公钥时不发任何东西，直接拒——少暴露一轮握手。返回的原因供调用方写成日志一行。
 pub async fn challenge_and_verify(
     stream: &mut crate::tcp::FramedStream,
     bound_pk: Option<&sign::PublicKey>,
+    host_pk: &sign::PublicKey,
+    host_sk: &sign::SecretKey,
     transcript: &[u8; 32],
 ) -> std::result::Result<(), RejectReason> {
     let Some(pk) = bound_pk else {
@@ -278,6 +314,8 @@ pub async fn challenge_and_verify(
     challenge.set_auth_nonce(crate::rendezvous_proto::AuthNonce {
         nonce: bytes::Bytes::copy_from_slice(&nonce),
         version: AUTH_VERSION,
+        host_pk: bytes::Bytes::copy_from_slice(&host_pk.0),
+        host_proof: sign_host(host_sk, transcript, &nonce).into(),
         ..Default::default()
     });
     if stream.send(&challenge).await.is_err() {
@@ -289,38 +327,71 @@ pub async fn challenge_and_verify(
             Ok(crate::rendezvous_proto::RendezvousMessage {
                 union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthProof(proof)),
                 ..
-            }) => verify_auth(Some(pk), transcript, &nonce, &proof.signature),
+            }) => match verify_auth(Some(pk), transcript, &nonce, &proof.signature) {
+                Ok(()) => {
+                    // 显式告诉对面“过了”：否则 Master 分不清“被拒”与“连接没了”。
+                    let mut ok = crate::rendezvous_proto::RendezvousMessage::new();
+                    ok.set_auth_ok(crate::rendezvous_proto::AuthOk::default());
+                    if stream.send(&ok).await.is_err() {
+                        return Err(RejectReason::NoProofYet);
+                    }
+                    Ok(())
+                }
+                Err(reason) => Err(reason),
+            },
             _ => Err(RejectReason::NoProofYet),
         },
         _ => Err(RejectReason::NoProofYet),
     }
 }
 
-/// Master 侧：等对面的挑战，用全局私钥回证明。
+/// Master 侧：等对面的挑战，先验证主机身份（并按指纹库做 TOFU），再用全局私钥回证明。
+///
+/// 返回指纹库对这台机器的结论：`New` 表示首次连接、已记录并标为未验证。
 pub async fn answer_challenge(
     stream: &mut crate::tcp::FramedStream,
     kp: &GlobalKeyPair,
     transcript: &[u8; 32],
-) -> ResultType<()> {
+    pinned: &mut PinnedHosts,
+    addr: &str,
+) -> std::result::Result<PinOutcome, RejectReason> {
     let bytes = match stream.next_timeout(AUTH_TIMEOUT_MS).await {
         Some(Ok(bytes)) => bytes,
-        _ => anyhow::bail!("no authentication challenge from service"),
+        _ => return Err(RejectReason::NoProofYet),
     };
     let message = crate::rendezvous_proto::RendezvousMessage::parse_from_bytes(&bytes)
-        .context("parsing authentication challenge")?;
+        .map_err(|_| RejectReason::NoProofYet)?;
     let challenge = match message.union {
         Some(crate::rendezvous_proto::rendezvous_message::Union::AuthNonce(challenge)) => challenge,
-        _ => anyhow::bail!("expected an authentication challenge"),
+        _ => return Err(RejectReason::NoProofYet),
     };
     if challenge.version != AUTH_VERSION {
-        anyhow::bail!("unsupported authentication version {}", challenge.version);
+        return Err(RejectReason::VersionMismatch);
+    }
+    let host_pk = sign::PublicKey::from_slice(&challenge.host_pk).ok_or(RejectReason::BadHostProof)?;
+    verify_host(&host_pk, transcript, &challenge.nonce, &challenge.host_proof)?;
+    let outcome = pinned.pin_or_check(addr, &host_pk);
+    if outcome == PinOutcome::Changed {
+        return Err(RejectReason::HostFingerprintMismatch);
     }
     let mut proof = crate::rendezvous_proto::RendezvousMessage::new();
     proof.set_auth_proof(crate::rendezvous_proto::AuthProof {
         signature: sign_auth(kp, transcript, &challenge.nonce).into(),
         ..Default::default()
     });
-    stream.send(&proof).await
+    stream.send(&proof).await.map_err(|_| RejectReason::NoProofYet)?;
+    // 等 Service 的明示：没收到回执就当没通过。
+    match stream.next_timeout(AUTH_TIMEOUT_MS).await {
+        Some(Ok(bytes)) => match crate::rendezvous_proto::RendezvousMessage::parse_from_bytes(&bytes)
+        {
+            Ok(crate::rendezvous_proto::RendezvousMessage {
+                union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthOk(_)),
+                ..
+            }) => Ok(outcome),
+            _ => Err(RejectReason::BadSignature),
+        },
+        _ => Err(RejectReason::BadSignature),
+    }
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -492,39 +563,111 @@ mod tests {
     #[tokio::test]
     async fn handshake_over_a_real_socket_accepts_the_right_key() {
         let kp = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
         let digest = transcript();
+        let mut pinned = PinnedHosts::default();
         let (mut master, mut service) = stream_pair().await;
         let (verified, answered) = tokio::join!(
-            challenge_and_verify(&mut service, Some(&kp.pk), &digest),
-            answer_challenge(&mut master, &kp, &digest)
+            challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
+            answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
         );
         assert_eq!(verified, Ok(()));
-        answered.expect("master answers");
+        // 首次连接：记录指纹，标记未验证。
+        assert_eq!(answered, Ok(PinOutcome::New));
+        assert_eq!(pinned.len(), 1);
+        let recorded = pinned.get("127.0.0.1:21118").expect("pinned");
+        assert!(!recorded.verified);
+        assert_eq!(recorded.fingerprint, fingerprint(&host_pk));
     }
 
     #[tokio::test]
     async fn handshake_over_a_real_socket_refuses_the_wrong_key() {
         let master_key = setup();
         let service_key = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
         let digest = transcript();
+        let mut pinned = PinnedHosts::default();
         let (mut master, mut service) = stream_pair().await;
-        let (verified, _) = tokio::join!(
-            challenge_and_verify(&mut service, Some(&service_key.pk), &digest),
-            answer_challenge(&mut master, &master_key, &digest)
+        let (verified, answered) = tokio::join!(
+            challenge_and_verify(
+                &mut service,
+                Some(&service_key.pk),
+                &host_pk,
+                &host_sk,
+                &digest
+            ),
+            answer_challenge(
+                &mut master,
+                &master_key,
+                &digest,
+                &mut pinned,
+                "127.0.0.1:21118"
+            )
         );
         assert_eq!(verified, Err(RejectReason::BadSignature));
+        // Master 也必须知道自己的证明没被接受，不能当成功。
+        assert_eq!(answered, Err(RejectReason::BadSignature));
+    }
+
+    #[tokio::test]
+    async fn a_changed_host_fingerprint_stops_the_connection() {
+        let kp = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
+        let (other_pk, _) = sign::gen_keypair();
+        let digest = transcript();
+        let mut pinned = PinnedHosts::default();
+        // 地址簿里已经记了另一把主机公钥。
+        pinned.pin_or_check("127.0.0.1:21118", &other_pk);
+        let (mut master, mut service) = stream_pair().await;
+        let (verified, answered) = tokio::join!(
+            challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
+            answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
+        );
+        assert_eq!(answered, Err(RejectReason::HostFingerprintMismatch));
+        // Master 不发证明，Service 只能等到超时。
+        assert_eq!(verified, Err(RejectReason::NoProofYet));
+        // 旧记录不动。
+        assert_eq!(
+            pinned.get("127.0.0.1:21118").expect("pinned").host_pk,
+            {
+                let mut s = String::new();
+                for b in other_pk.0 {
+                    s.push_str(&format!("{b:02x}"));
+                }
+                s
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_connection_is_verified() {
+        let kp = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
+        let digest = transcript();
+        let mut pinned = PinnedHosts::default();
+        for expected in [PinOutcome::New, PinOutcome::Verified] {
+            let (mut master, mut service) = stream_pair().await;
+            let (verified, answered) = tokio::join!(
+                challenge_and_verify(&mut service, Some(&kp.pk), &host_pk, &host_sk, &digest),
+                answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
+            );
+            assert_eq!(verified, Ok(()));
+            assert_eq!(answered, Ok(expected));
+        }
     }
 
     #[tokio::test]
     async fn unbound_service_refuses_without_talking() {
         let kp = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
         let digest = transcript();
+        let mut pinned = PinnedHosts::default();
         let (mut master, mut service) = stream_pair().await;
         let (verified, answered) = tokio::join!(
-            challenge_and_verify(&mut service, None, &digest),
+            challenge_and_verify(&mut service, None, &host_pk, &host_sk, &digest),
             tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                answer_challenge(&mut master, &kp, &digest)
+                answer_challenge(&mut master, &kp, &digest, &mut pinned, "127.0.0.1:21118")
             )
         );
         assert_eq!(verified, Err(RejectReason::NoBoundKey));

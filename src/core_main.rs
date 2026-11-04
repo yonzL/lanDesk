@@ -96,6 +96,39 @@ pub fn core_main() -> Option<CoreMainAction> {
     if let Err(err) = crate::landesk::take_from_args(&mut args) {
         return Some(CoreMainAction::ExitFailure(err));
     }
+    // landesk 的 Master 拨号模式：连一次、做完密钥证明、把指纹变化落盘，然后退出。
+    if let Some(path) = crate::landesk::config().and_then(|config| config.genkey.clone()) {
+        let keypair = hbb_common::keyauth::GlobalKeyPair::generate();
+        return match keypair.save(&path) {
+            Ok(()) => {
+                println!(
+                    "private key: {}\npublic key: {}",
+                    path.display(),
+                    crate::landesk::public_key_hex(&keypair.pk)
+                );
+                log::info!("landesk: wrote a key pair to {}", path.display());
+                None
+            }
+            Err(err) => Some(CoreMainAction::ExitFailure(err)),
+        };
+    }
+    if let Some(addr) = crate::landesk::config().and_then(|config| config.connect.clone()) {
+        let config = crate::landesk::config().expect("checked above");
+        let book = config.book_path();
+        let key = config.key_path();
+        log::info!("landesk: connecting to {addr}");
+        let runtime = match hbb_common::tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime,
+            Err(err) => return Some(CoreMainAction::ExitFailure(err.into())),
+        };
+        return match runtime.block_on(crate::transport::dial(&addr, &book, &key)) {
+            Ok(outcome) => {
+                log::info!("landesk: {addr} accepted ({outcome:?})");
+                None
+            }
+            Err(err) => Some(CoreMainAction::ExitFailure(err)),
+        };
+    }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if args.is_empty() {
         #[cfg(target_os = "linux")]

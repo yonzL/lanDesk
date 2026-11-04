@@ -252,10 +252,15 @@ message KxParams {
 
 // landesk: the Service's challenge, sent over the already key-exchanged channel before it accepts
 // any session message. `nonce` is fresh per connection; `version` is the authenticator's version,
-// so a peer that speaks another one is refused instead of downgraded.
+// so a peer that speaks another one is refused instead of downgraded. `host_pk` is the Service's
+// host signing key and `host_proof` its signature over the transcript and nonce: the Master needs
+// the key itself to decide whether this really is the machine its address book knows, and without
+// a rendezvous server there is nothing else to ask.
 message AuthNonce {
   bytes nonce = 1;
   uint32 version = 2;
+  bytes host_pk = 3;
+  bytes host_proof = 4;
 }
 
 // landesk: the Master's proof of holding the global private key. The signature covers
@@ -263,6 +268,10 @@ message AuthNonce {
 message AuthProof {
   bytes signature = 1;
 }
+
+// landesk: the Service's acceptance. Without it the Master cannot tell its proof from a dropped
+// connection, and would report success to a session the Service already refused.
+message AuthOk {}
 
 message HealthCheck {
   string token = 1;
@@ -322,5 +331,6 @@ message RendezvousMessage {
     IceCandidate ice_candidate = 29;
     AuthNonce auth_nonce = 30;
     AuthProof auth_proof = 31;
+    AuthOk auth_ok = 32;
   }
 }

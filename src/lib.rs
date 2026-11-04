@@ -68,6 +68,7 @@ mod ui_interface;
 mod ui_session_interface;
 
 mod hbbs_http;
+mod addressbook;
 mod landesk;
 mod transport;
 
