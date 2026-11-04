@@ -57,6 +57,7 @@ pub struct LandeskUi {
     frames: Arc<Mutex<Option<Frame>>>,
     seq: Arc<std::sync::atomic::AtomicU64>,
     messages: Arc<Mutex<Vec<String>>>,
+    displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
 }
 
 impl InvokeUiSession for LandeskUi {
@@ -66,7 +67,13 @@ impl InvokeUiSession for LandeskUi {
     fn set_display(&self, _x: i32, _y: i32, _w: i32, _h: i32, _cursor_embedded: bool, _scale: f64) {}
     fn switch_display(&self, _display: &SwitchDisplay) {}
     fn set_peer_info(&self, _peer_info: &PeerInfo) {}
-    fn set_displays(&self, _displays: &Vec<DisplayInfo>) {}
+    fn set_displays(&self, displays: &Vec<DisplayInfo>) {
+        let mut slots = self.displays.lock().unwrap();
+        slots.clear();
+        for (index, display) in displays.iter().enumerate() {
+            slots.push((index as i32, display.width, display.height));
+        }
+    }
     fn set_platform_additions(&self, _data: &str) {}
     fn on_connected(&self, _conn_type: ConnType) {}
     fn update_privacy_mode(&self) {}
@@ -151,6 +158,7 @@ pub struct SessionHandle {
     frames: Arc<Mutex<Option<Frame>>>,
     messages: Arc<Mutex<Vec<String>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
+    displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
     session: Session<LandeskUi>,
 }
 
@@ -177,6 +185,15 @@ impl SessionHandle {
             .as_ref()
             .map(|frame| frame.seq)
             .unwrap_or(0)
+    }
+
+    /// 对端报告过的显示器（序号、宽、高）。多于一台时界面给出切换。
+    pub fn displays(&self) -> Vec<(i32, i32, i32)> {
+        self.displays.lock().unwrap().clone()
+    }
+
+    pub fn switch_display(&self, display: i32) {
+        self.session.switch_display(display);
     }
 
     pub fn send_mouse(
@@ -209,11 +226,13 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
 
     let frames = Arc::new(Mutex::new(None));
     let messages = Arc::new(Mutex::new(Vec::new()));
+    let displays = Arc::new(Mutex::new(Vec::new()));
     let mut session = Session::<LandeskUi>::default();
     session.ui_handler = LandeskUi {
         frames: frames.clone(),
         seq: Default::default(),
         messages: messages.clone(),
+        displays: displays.clone(),
     };
     session.lc.write().unwrap().initialize(
         peer.clone(),
@@ -229,6 +248,7 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
         frames: frames.clone(),
         messages,
         closed: closed.clone(),
+        displays,
         session: session.clone(),
     };
 
