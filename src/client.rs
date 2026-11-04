@@ -434,6 +434,27 @@ impl Client {
         if config::is_incoming_only() && !is_switch_sides_back(conn_type, &interface).await {
             bail!("Incoming only mode");
         }
+        // landesk：这次连接是我们自己登记过的目标，就用已认证的那条流，不走 rendezvous。
+        if let Some(target) = crate::landesk::session::take_target(peer) {
+            let authenticated = crate::transport::connect_authenticated(
+                peer,
+                &target.book,
+                &target.key,
+                target.control,
+            )
+            .await?;
+            return Ok((
+                (
+                    hbb_common::Stream::Tcp(authenticated.stream),
+                    true,
+                    Some(authenticated.host_pk.to_vec()),
+                    None,
+                    "landesk",
+                ),
+                (0, String::new()),
+                false,
+            ));
+        }
         // to-do: remember the port for each peer, so that we can retry easier
         if hbb_common::is_ip_str(peer) {
             return Ok((

@@ -5,6 +5,8 @@
 //!
 //! 只有显式给出 `--landesk-listen` / `--landesk-auth-key` 时本模块才生效，未配置时保持上游行为。
 
+pub mod session;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::OnceLock;
