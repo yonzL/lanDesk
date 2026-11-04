@@ -123,6 +123,7 @@ pub async fn connect_authenticated(
         .await
         .map_err(|reason| hbb_common::anyhow::anyhow!(keyauth::reject_log_line(reason, addr)))?;
     book.save(book_path)?;
+    log::info!("landesk: authenticated {addr} ({outcome:?})");
     Ok(Authenticated {
         stream: conn,
         host_pk: their_pk_b,
@@ -138,6 +139,7 @@ pub async fn dial(
     control: bool,
 ) -> ResultType<PinOutcome> {
     let authenticated = connect_authenticated(addr, book_path, key_path, control).await?;
+    log::info!("landesk: dial done for {addr} ({:?})", authenticated.outcome);
     Ok(authenticated.outcome)
 }
 

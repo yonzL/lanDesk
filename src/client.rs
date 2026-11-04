@@ -436,6 +436,7 @@ impl Client {
         }
         // landesk：这次连接是我们自己登记过的目标，就用已认证的那条流，不走 rendezvous。
         if let Some(target) = crate::landesk::session::take_target(peer) {
+            log::info!("landesk: using the authenticated path for {peer}");
             let authenticated = crate::transport::connect_authenticated(
                 peer,
                 &target.book,

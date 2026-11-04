@@ -149,6 +149,16 @@ impl SessionHandle {
         self.frames.lock().unwrap().clone()
     }
 
+    /// 只看序号：界面用它判断要不要去拷一帧（拷贝一帧 1080p 约 8MB）。
+    pub fn frame_seq(&self) -> u64 {
+        self.frames
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|frame| frame.seq)
+            .unwrap_or(0)
+    }
+
     pub fn send_mouse(
         &self,
         mask: i32,

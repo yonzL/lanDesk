@@ -1910,6 +1910,7 @@ impl Connection {
         }
         self.lr.trusted_device_v2_token.clear();
         self.authorized = true;
+        log::info!("landesk: connection {} authorized", self.inner.id());
         self.unauthorized_id = None;
         // One-time means gone once it has let a peer in, not once that peer
         // leaves. This session's later logins come in on the password the
@@ -2870,6 +2871,12 @@ impl Connection {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn try_start_cm_ipc(&mut self) {
+        // landesk: 无界面的 Service 没有连接管理器，也不需要有——会话由远端的 Master 自己显示。
+        // 不跳过的话，服务端会去拉一个 UI 进程、失败后把连接关掉。
+        if crate::landesk::takes_over_network() {
+            self.start_cm_ipc_para = None;
+            return;
+        }
         if let Some(p) = self.start_cm_ipc_para.take() {
             tokio::spawn(async move {
                 #[cfg(windows)]
@@ -2915,6 +2922,7 @@ impl Connection {
         }
         // After handling CloseReason messages, proceed to process other message types
         if let Some(message::Union::LoginRequest(lr)) = msg.union {
+            log::info!("landesk: login request received");
             if !self.check_login_scope(&lr).await {
                 return false;
             }
@@ -3001,7 +3009,10 @@ impl Connection {
                 },
             );
 
-            if !crate::common::is_direct_ip_access(&lr.username) && lr.username != Config::get_id()
+            // landesk: 没有设备 ID，也就没有“要找的那个 ID”；身份已在鉴权阶段用密钥证明过。
+            if !crate::landesk::takes_over_network()
+                && !crate::common::is_direct_ip_access(&lr.username)
+                && lr.username != Config::get_id()
             {
                 self.send_login_error(crate::client::LOGIN_MSG_OFFLINE)
                     .await;
@@ -3050,7 +3061,15 @@ impl Connection {
                 crate::get_builtin_option(keys::OPTION_ALLOW_LOGON_SCREEN_PASSWORD) == "Y"
                     && is_logon();
 
-            if (password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password)
+            if crate::landesk::takes_over_network() {
+                // landesk: 身份已经在密钥鉴权阶段证过，不需要密码，也不需要有人在机器前点头。
+                if !self.begin_trusted_device().await {
+                    return false;
+                }
+                if !self.send_logon_response_and_keep_alive().await {
+                    return false;
+                }
+            } else if (password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password)
                 || password::approve_mode() == ApproveMode::Both && !password::has_valid_password()
             {
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]

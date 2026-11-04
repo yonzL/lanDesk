@@ -1,24 +1,30 @@
-//! lanDesk 的最小 Master 窗口：左侧组/子组树，右侧选中机器的信息与连接按钮，底部一行日志。
+//! lanDesk 的最小 Master 窗口：左侧组/子组树，右侧选中机器的信息；连上之后把远端画面画在窗口里，
+//! 并把键鼠转成上游的输入消息。
 //!
-//! 它只做三件事：读地址簿、拨号（复用 `librustdesk::transport::dial`）、把人能看懂的结果写在底部。
-//! 设计取舍见 `architecture.md`：先要一个能在这台机器上编译、能真的连上去的最小界面。
+//! 设计取舍见 `architecture.md`：会话本体（登录、解码、输入编码）用上游的 `Remote`，这里只做接线
+//! 与画面呈现。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use base::message_proto::{key_event, ControlKey, KeyEvent, KeyboardMode};
 use eframe::egui;
-use hbb_common::keyauth::PinOutcome;
+
 use librustdesk::addressbook::{AddressBook, Entry};
+use librustdesk::common::input::{
+    MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_TYPE_DOWN, MOUSE_TYPE_MOVE, MOUSE_TYPE_UP,
+    MOUSE_TYPE_WHEEL,
+};
 use librustdesk::landesk::exe_dir;
+use librustdesk::landesk::session::SessionHandle;
 
 fn main() -> eframe::Result<()> {
     let dir = exe_dir();
     let app = App::new(dir.join("addressbook.json"), dir.join("private.key"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([820.0, 560.0])
+            .with_inner_size([1000.0, 680.0])
             .with_title("lanDesk"),
         ..Default::default()
     };
@@ -32,7 +38,12 @@ struct App {
     load_error: Option<String>,
     selected: Option<String>,
     log: Vec<String>,
-    receiver: Option<Receiver<Result<PinOutcome, String>>>,
+    session: Option<SessionHandle>,
+    session_peer: Option<String>,
+    texture: Option<egui::TextureHandle>,
+    last_frame_seq: u64,
+    remote_size: (usize, usize),
+    last_pointer: Option<(i32, i32)>,
 }
 
 impl App {
@@ -44,7 +55,12 @@ impl App {
             load_error: None,
             selected: None,
             log: Vec::new(),
-            receiver: None,
+            session: None,
+            session_peer: None,
+            texture: None,
+            last_frame_seq: 0,
+            remote_size: (0, 0),
+            last_pointer: None,
         };
         app.reload();
         app
@@ -65,7 +81,6 @@ impl App {
         }
     }
 
-    /// 分组：组 → 子组 → 条目。只影响"怎么找到机器"，不承载权限。
     fn tree(&self) -> BTreeMap<String, BTreeMap<String, Vec<Entry>>> {
         let mut tree: BTreeMap<String, BTreeMap<String, Vec<Entry>>> = BTreeMap::new();
         for entry in self.book.entries() {
@@ -79,26 +94,39 @@ impl App {
     }
 
     fn connect(&mut self, addr: String, control: bool) {
-        if self.receiver.is_some() {
+        if self.session.is_some() {
             return;
         }
-        self.log.push(if control { format!("连接 {addr}（申请操作权）…") } else { format!("连接 {addr}（只看）…") });
-        let (tx, rx) = mpsc::channel();
-        self.receiver = Some(rx);
-        let book_path = self.book_path.clone();
-        let key_path = self.key_path.clone();
-        std::thread::spawn(move || {
-            let result = match hbb_common::tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime
-                    .block_on(librustdesk::transport::dial(&addr, &book_path, &key_path, control))
-                    .map_err(|err| format!("{err:#}")),
-                Err(err) => Err(format!("{err}")),
-            };
-            tx.send(result).ok();
+        self.log.push(if control {
+            format!("连接 {addr}（申请操作权）…")
+        } else {
+            format!("连接 {addr}（只看）…")
         });
+        match librustdesk::landesk::session::start(
+            addr.clone(),
+            self.book_path.clone(),
+            self.key_path.clone(),
+            control,
+        ) {
+            Ok(session) => {
+                self.session = Some(session);
+                self.session_peer = Some(addr.clone());
+                self.selected = Some(addr);
+            }
+            Err(err) => self.log.push(format!("连接失败：{err:#}")),
+        }
+    }
+
+    fn disconnect(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.close();
+            self.log.push("已断开".into());
+        }
+        self.session_peer = None;
+        self.texture = None;
+        self.last_frame_seq = 0;
+        self.remote_size = (0, 0);
+        self.reload();
     }
 
     fn mark_verified(&mut self, addr: &str) {
@@ -122,33 +150,187 @@ impl App {
         }
     }
 
-    fn poll(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.receiver {
-            match rx.try_recv() {
-                Ok(result) => {
-                    self.receiver = None;
-                    match result {
-                        Ok(PinOutcome::New) => {
-                            self.log.push("连接成功；这台机器是首次连接，指纹已记录（未验证）".into())
-                        }
-                        Ok(PinOutcome::Verified) => self.log.push("连接成功；指纹与地址簿一致".into()),
-                        Ok(PinOutcome::Changed) => self.log.push("连接被拒：指纹变了".into()),
-                        Err(err) => self.log.push(format!("连接失败：{err}")),
-                    }
-                    self.reload();
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(Duration::from_millis(200))
-                }
-                Err(mpsc::TryRecvError::Disconnected) => self.receiver = None,
+    /// 把新帧传成纹理。只在序号变化时做——一帧 1080p 约 8MB。
+    fn pump_frames(&mut self, ctx: &egui::Context) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let seq = session.frame_seq();
+        if seq == self.last_frame_seq {
+            ctx.request_repaint_after(Duration::from_millis(16));
+            return;
+        }
+        let Some(frame) = session.latest_frame() else {
+            return;
+        };
+        if frame.width == 0 || frame.height == 0 || frame.rgba.len() < frame.width * frame.height * 4 {
+            return;
+        }
+        self.last_frame_seq = frame.seq;
+        self.remote_size = (frame.width, frame.height);
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [frame.width, frame.height],
+            &frame.rgba[..frame.width * frame.height * 4],
+        );
+        match &mut self.texture {
+            Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+            None => {
+                self.texture =
+                    Some(ctx.load_texture("landesk-remote", image, egui::TextureOptions::LINEAR));
+                self.log.push(format!(
+                    "收到画面 {}x{}",
+                    self.remote_size.0, self.remote_size.1
+                ));
             }
         }
     }
+
+    fn draw_remote(&mut self, ui: &mut egui::Ui) {
+        let Some(texture) = self.texture.clone() else {
+            ui.label("已连上，正在等画面…");
+            return;
+        };
+        let (rw, rh) = (self.remote_size.0 as f32, self.remote_size.1 as f32);
+        let available = ui.available_size();
+        let scale = (available.x / rw).min(available.y / rh).min(1.0);
+        let size = egui::vec2(rw * scale, rh * scale);
+        let (rect, response) =
+            ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        ui.painter().image(
+            texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+
+        let Some(session) = &self.session else {
+            return;
+        };
+        let (modifiers, scroll, events, pressed, released) = ui.input(|i| {
+            (
+                i.modifiers,
+                i.raw_scroll_delta.y,
+                i.events.clone(),
+                i.pointer.button_pressed(egui::PointerButton::Primary),
+                i.pointer.button_released(egui::PointerButton::Primary),
+            )
+        });
+        let (alt, ctrl, shift, command) = (
+            modifiers.alt,
+            modifiers.ctrl,
+            modifiers.shift,
+            modifiers.command,
+        );
+        let to_remote = |pos: egui::Pos2| -> (i32, i32) {
+            let x = ((pos.x - rect.min.x) / rect.width().max(1.0) * rw).clamp(0.0, rw - 1.0);
+            let y = ((pos.y - rect.min.y) / rect.height().max(1.0) * rh).clamp(0.0, rh - 1.0);
+            (x as i32, y as i32)
+        };
+        if let Some(pos) = response.hover_pos() {
+            let (x, y) = to_remote(pos);
+            if self.last_pointer != Some((x, y)) {
+                self.last_pointer = Some((x, y));
+                session.send_mouse(MOUSE_TYPE_MOVE, x, y, alt, ctrl, shift, command);
+            }
+        }
+        if let Some(pos) = response.interact_pointer_pos() {
+            let (x, y) = to_remote(pos);
+            if pressed {
+                session.send_mouse(
+                    MOUSE_TYPE_DOWN | MOUSE_BUTTON_LEFT,
+                    x,
+                    y,
+                    alt,
+                    ctrl,
+                    shift,
+                    command,
+                );
+            }
+            if released {
+                session.send_mouse(
+                    MOUSE_TYPE_UP | MOUSE_BUTTON_LEFT,
+                    x,
+                    y,
+                    alt,
+                    ctrl,
+                    shift,
+                    command,
+                );
+            }
+        }
+        if let Some(pos) = response.hover_pos() {
+            if scroll.abs() > 0.5 {
+                let (x, y) = to_remote(pos);
+                session.send_mouse(
+                    MOUSE_TYPE_WHEEL,
+                    x,
+                    (scroll * -10.0) as i32,
+                    alt,
+                    ctrl,
+                    shift,
+                    command,
+                );
+            }
+        }
+        for event in events {
+            match event {
+                // 可打印字符走 legacy 模式的 unicode 通道：目标机自己按自己的键盘布局查键码。
+                egui::Event::Text(text) => {
+                    for ch in text.chars() {
+                        let mut evt = KeyEvent::new();
+                        evt.set_chr(ch as u32);
+                        evt.down = true;
+                        evt.press = true;
+                        evt.mode = KeyboardMode::Legacy.into();
+                        session.send_key(&evt);
+                    }
+                }
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    repeat: _,
+                    modifiers: _,
+                    physical_key: _,
+                } => {
+                    let Some(control_key) = control_key_of(key) else {
+                        continue;
+                    };
+                    let mut evt = KeyEvent::new();
+                    evt.set_control_key(control_key);
+                    evt.down = pressed;
+                    evt.press = pressed;
+                    session.send_key(&evt);
+                }
+                _ => {}
+            }
+        }
+        let _ = key_event::Union::Chr(0); // 保持对生成类型路径的引用，避免 cfg 差异导致未用告警
+        let _ = MOUSE_BUTTON_RIGHT;
+    }
+}
+
+fn control_key_of(key: egui::Key) -> Option<ControlKey> {
+    Some(match key {
+        egui::Key::Enter => ControlKey::Return,
+        egui::Key::Backspace => ControlKey::Backspace,
+        egui::Key::Tab => ControlKey::Tab,
+        egui::Key::Escape => ControlKey::Escape,
+        egui::Key::Delete => ControlKey::Delete,
+        egui::Key::Home => ControlKey::Home,
+        egui::Key::End => ControlKey::End,
+        egui::Key::PageUp => ControlKey::PageUp,
+        egui::Key::PageDown => ControlKey::PageDown,
+        egui::Key::ArrowLeft => ControlKey::LeftArrow,
+        egui::Key::ArrowRight => ControlKey::RightArrow,
+        egui::Key::ArrowUp => ControlKey::UpArrow,
+        egui::Key::ArrowDown => ControlKey::DownArrow,
+        _ => return None,
+    })
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll(ctx);
+        self.pump_frames(ctx);
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(4.0);
@@ -157,6 +339,13 @@ impl eframe::App for App {
                 ui.separator();
                 if ui.button("重新读取地址簿").clicked() {
                     self.reload();
+                }
+                if let Some(peer) = &self.session_peer {
+                    ui.separator();
+                    ui.label(format!("已连接：{peer}"));
+                    if ui.button("断开").clicked() {
+                        self.disconnect();
+                    }
                 }
                 ui.label(format!("地址簿：{}", self.book_path.display()));
             });
@@ -168,7 +357,7 @@ impl eframe::App for App {
 
         egui::SidePanel::left("tree")
             .resizable(true)
-            .default_width(300.0)
+            .default_width(280.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 if self.book.entries().is_empty() {
@@ -219,7 +408,7 @@ impl eframe::App for App {
         egui::TopBottomPanel::bottom("log").show(ctx, |ui| {
             ui.add_space(2.0);
             egui::ScrollArea::vertical()
-                .max_height(120.0)
+                .max_height(110.0)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     for line in &self.log {
@@ -229,6 +418,17 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(peer) = self.session_peer.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("远端：{peer}"));
+                    let (state, _) = self.pin_state(&peer);
+                    ui.label(format!("主机指纹：{state}"));
+                });
+                ui.separator();
+                self.draw_remote(ui);
+                return;
+            }
+
             let Some(addr) = self.selected.clone() else {
                 ui.label("从左边的地址簿里选一台机器。");
                 return;
@@ -247,17 +447,16 @@ impl eframe::App for App {
             ui.label(format!("主机指纹：{state}"));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let busy = self.receiver.is_some();
                 if ui
-                    .add_enabled(!busy, egui::Button::new("连接（申请操作权）"))
-                    .on_hover_text("验证对面主机身份、用本机私钥证明自己，并拿操作权（会把当前操作者降为只读）")
+                    .button("连接（申请操作权）")
+                    .on_hover_text("验证对面主机、用本机私钥证明自己，然后进入会话")
                     .clicked()
                 {
                     self.connect(addr.clone(), true);
                 }
                 if ui
-                    .add_enabled(!busy, egui::Button::new("只看"))
-                    .on_hover_text("同样验证身份与私钥，但不抢操作权：只收画面")
+                    .button("只看")
+                    .on_hover_text("同样验证身份，但声明自己不发送输入")
                     .clicked()
                 {
                     self.connect(addr.clone(), false);
