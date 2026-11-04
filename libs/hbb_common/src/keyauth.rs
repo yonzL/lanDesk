@@ -9,9 +9,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use protobuf::Message;
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sodiumoxide::crypto::sign;
+
+use crate::ResultType;
 
 /// 认证协议版本，与 `AuthNonce.version` 对应；两端不一致时拒绝，不降级。
 pub const AUTH_VERSION: u32 = 1;
@@ -256,6 +259,70 @@ impl PinnedHosts {
     }
 }
 
+/// 认证步骤的超时；到点没等到对面的消息即按拒绝处理。
+pub const AUTH_TIMEOUT_MS: u64 = 10_000;
+
+/// Service 侧：在已建立（已加密）的通道上发挑战并验签。
+///
+/// 未绑定公钥时不发任何东西，直接拒——少暴露一轮握手。返回的原因供调用方写成日志一行。
+pub async fn challenge_and_verify(
+    stream: &mut crate::tcp::FramedStream,
+    bound_pk: Option<&sign::PublicKey>,
+    transcript: &[u8; 32],
+) -> std::result::Result<(), RejectReason> {
+    let Some(pk) = bound_pk else {
+        return Err(RejectReason::NoBoundKey);
+    };
+    let nonce = new_nonce();
+    let mut challenge = crate::rendezvous_proto::RendezvousMessage::new();
+    challenge.set_auth_nonce(crate::rendezvous_proto::AuthNonce {
+        nonce: bytes::Bytes::copy_from_slice(&nonce),
+        version: AUTH_VERSION,
+        ..Default::default()
+    });
+    if stream.send(&challenge).await.is_err() {
+        return Err(RejectReason::NoProofYet);
+    }
+    match stream.next_timeout(AUTH_TIMEOUT_MS).await {
+        Some(Ok(bytes)) => match crate::rendezvous_proto::RendezvousMessage::parse_from_bytes(&bytes)
+        {
+            Ok(crate::rendezvous_proto::RendezvousMessage {
+                union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthProof(proof)),
+                ..
+            }) => verify_auth(Some(pk), transcript, &nonce, &proof.signature),
+            _ => Err(RejectReason::NoProofYet),
+        },
+        _ => Err(RejectReason::NoProofYet),
+    }
+}
+
+/// Master 侧：等对面的挑战，用全局私钥回证明。
+pub async fn answer_challenge(
+    stream: &mut crate::tcp::FramedStream,
+    kp: &GlobalKeyPair,
+    transcript: &[u8; 32],
+) -> ResultType<()> {
+    let bytes = match stream.next_timeout(AUTH_TIMEOUT_MS).await {
+        Some(Ok(bytes)) => bytes,
+        _ => anyhow::bail!("no authentication challenge from service"),
+    };
+    let message = crate::rendezvous_proto::RendezvousMessage::parse_from_bytes(&bytes)
+        .context("parsing authentication challenge")?;
+    let challenge = match message.union {
+        Some(crate::rendezvous_proto::rendezvous_message::Union::AuthNonce(challenge)) => challenge,
+        _ => anyhow::bail!("expected an authentication challenge"),
+    };
+    if challenge.version != AUTH_VERSION {
+        anyhow::bail!("unsupported authentication version {}", challenge.version);
+    }
+    let mut proof = crate::rendezvous_proto::RendezvousMessage::new();
+    proof.set_auth_proof(crate::rendezvous_proto::AuthProof {
+        signature: sign_auth(kp, transcript, &challenge.nonce).into(),
+        ..Default::default()
+    });
+    stream.send(&proof).await
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -404,5 +471,64 @@ mod tests {
             reject_log_line(RejectReason::BadSignature, "10.0.0.5:5555"),
             "landesk: reject bad-signature from 10.0.0.5:5555"
         );
+    }
+
+    async fn stream_pair() -> (crate::tcp::FramedStream, crate::tcp::FramedStream) {
+        let listener = crate::tcp::new_listener("127.0.0.1:0", false)
+            .await
+            .expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let dialing = tokio::spawn(async move {
+            crate::tcp::FramedStream::new(addr.to_string(), None, 5_000)
+                .await
+                .expect("connect")
+        });
+        let (stream, _) = listener.accept().await.expect("accept");
+        stream.set_nodelay(true).ok();
+        let service = crate::tcp::FramedStream::from(stream, addr);
+        (dialing.await.expect("join"), service)
+    }
+
+    #[tokio::test]
+    async fn handshake_over_a_real_socket_accepts_the_right_key() {
+        let kp = setup();
+        let digest = transcript();
+        let (mut master, mut service) = stream_pair().await;
+        let (verified, answered) = tokio::join!(
+            challenge_and_verify(&mut service, Some(&kp.pk), &digest),
+            answer_challenge(&mut master, &kp, &digest)
+        );
+        assert_eq!(verified, Ok(()));
+        answered.expect("master answers");
+    }
+
+    #[tokio::test]
+    async fn handshake_over_a_real_socket_refuses_the_wrong_key() {
+        let master_key = setup();
+        let service_key = setup();
+        let digest = transcript();
+        let (mut master, mut service) = stream_pair().await;
+        let (verified, _) = tokio::join!(
+            challenge_and_verify(&mut service, Some(&service_key.pk), &digest),
+            answer_challenge(&mut master, &master_key, &digest)
+        );
+        assert_eq!(verified, Err(RejectReason::BadSignature));
+    }
+
+    #[tokio::test]
+    async fn unbound_service_refuses_without_talking() {
+        let kp = setup();
+        let digest = transcript();
+        let (mut master, mut service) = stream_pair().await;
+        let (verified, answered) = tokio::join!(
+            challenge_and_verify(&mut service, None, &digest),
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                answer_challenge(&mut master, &kp, &digest)
+            )
+        );
+        assert_eq!(verified, Err(RejectReason::NoBoundKey));
+        // 服务端没发挑战，Master 只能等到超时。
+        assert!(answered.is_err(), "master must not receive a challenge");
     }
 }
