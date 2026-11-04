@@ -31,7 +31,7 @@ fn init_logging() {
             true
         }
         fn log(&self, record: &hbb_common::log::Record) {
-            if record.level() <= hbb_common::log::Level::Info {
+            if record.level() <= hbb_common::log::Level::Debug {
                 eprintln!("[{}] {}", record.level(), record.args());
             }
         }
@@ -39,7 +39,12 @@ fn init_logging() {
     }
     static LOGGER: Stderr = Stderr;
     let _ = hbb_common::log::set_logger(&LOGGER);
-    hbb_common::log::set_max_level(hbb_common::log::LevelFilter::Info);
+    let level = match std::env::var("LANDESK_LOG").unwrap_or_else(|_| "info".into()).as_str() {
+        "debug" => hbb_common::log::LevelFilter::Debug,
+        "trace" => hbb_common::log::LevelFilter::Trace,
+        _ => hbb_common::log::LevelFilter::Info,
+    };
+    hbb_common::log::set_max_level(level);
 }
 
 impl Drop for Service {
@@ -87,6 +92,17 @@ fn start_service(port: u16, pub_key: &str, log: PathBuf) -> Service {
     panic!("service did not listen on port {port} within 30s");
 }
 
+/// 一个进程里同一时刻只能跑一个 rustdesk `--server`（IPC 管道名全局唯一），测试串行。
+fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn unique_port() -> u16 {
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    31300 + (NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 400)
+}
+
 fn dump(path: &std::path::Path) {
     if let Ok(text) = std::fs::read_to_string(path) {
         eprintln!("--- {} ---\n{}", path.display(), text);
@@ -95,6 +111,7 @@ fn dump(path: &std::path::Path) {
 
 #[test]
 fn a_landesk_session_receives_a_frame() {
+    let _guard = exclusive();
     let _ = hbb_common::sodiumoxide::init();
     init_logging();
     let dir = temp_dir("frame");
@@ -105,7 +122,7 @@ fn a_landesk_session_receives_a_frame() {
     let pub_key = public_key_hex(&keypair.pk);
 
     // 端口按进程号偏移，避免与家目录里跑着的 Service 撞车。
-    let port = 31300 + (std::process::id() % 200) as u16;
+    let port = unique_port();
     let mut service = start_service(port, &pub_key, dir.join("service.log"));
     let addr = format!("127.0.0.1:{}", service.port);
 
