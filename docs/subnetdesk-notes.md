@@ -20,7 +20,7 @@ PublicKey{asymmetric_value, symmetric_value}   ← 复用上游的对称密钥�
 
 - **只证明被控端身份**（客户端验主机），控制端身份靠登录框里的用户名/密码（Argon2id）。我们的做法更强：单把全局私钥做**双向**证明，不需要密码。
 - 它把自定义消息加进 `message.proto`（`LanClientHello` / `LanServerHello`），用 `Message` 承载——和我们在 `rendezvous.proto` 加 `AuthNonce`/`AuthProof` 是同一手法。
-- `PROTOCOL_VERSION` 显式比对，不匹配直接 bail。我们目前没有版本号，两端版本不一致时的行为是"协议解析失败"，报错不友好——值得加一个。
+- `PROTOCOL_VERSION` 显式比对，不匹配直接 bail。我们已经有同一件事：`AUTH_VERSION` + `AuthNonce.version`，不匹配返回 `RejectReason::VersionMismatch`（日志里是 `version-mismatch`）。这条我们已经做完了。
 - 指纹 = `device_fingerprint(device_public_key)`，首次连接交给用户确认并记住（TOFU）。我们已做同一件事（`PinnedHosts`），并且额外支持"标记已验证"。
 
 ### 1.2 来源网络白名单：`src/lan_server.rs`
@@ -65,10 +65,9 @@ README 提到 DRM 包因为"根服务要适配新的 user-session runtime"而暂
 
 **建议借（按性价比排序）**
 
-1. **来源 CIDR 白名单，默认私有网段**（≈40 行 + 一个依赖，带单测）。与 goal 里"只在私有网络里用"完全一致，且把"端口暴露在公网"从"靠密钥"升级成"默认拒绝"。
-2. **协议版本号**（握手时比对，不匹配给明确错误）。我们已经在握手层加了自定义消息，加一个 `u32` 很便宜。
-3. **监听监督循环 + 状态机**（配置变了自动重启监听，界面能显示 failed/last_error）。我们现在改端口必须重启进程。
-4. **mDNS 发现**（`mdns-sd`）。收益明显但工作量最大，且要防"被发现在公网端口上"的隐私问题。
+1. **来源 CIDR 白名单，默认私有网段**（≈40 行 + 一个已在依赖树里的 `ipnet`，带单测）。与 goal 里"只在私有网络里用"完全一致，且把"端口暴露在公网"从"靠密钥"升级成"默认拒绝"。**已实现**（`src/landesk/net.rs`）。
+2. **监听监督循环 + 状态机**（配置变了自动重启监听，界面能显示 failed/last_error）。我们现在改端口必须重启进程。
+3. **mDNS 发现**（`mdns-sd`）。收益明显但工作量最大，且要防"被发现在公网端口上"的隐私问题。
 
 **不建议借**
 
