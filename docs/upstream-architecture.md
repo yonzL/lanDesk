@@ -66,7 +66,6 @@ UI 事件 ──► KeyEvent{chr|control_key, modifiers, mode} ──► 服务�
 - 服务端所有文件动作都过 `send_fs`（`connection.rs:2429`）：landesk 在本进程跑 `ui_cm_interface::handle_fs`（`:2433-2449`），否则 `send_to_cm`（`:2452`，无接收者时 **静默丢弃**）。
 
 ## 6. 排障对照表
-
 | 现象 | 先查这些点 |
 |---|---|
 | 画面滞后 | 服务端 `video_qos` 的 fps/ratio（trace `qos_trace`）、`switch to change quality`、客户端 `Refresh display … to reduce delay`（`:1652`）、`Set fps to {}`；landesk 侧额外看 `on_rgba` 的整帧转换与 GUI 拉帧拷贝 |
@@ -76,7 +75,20 @@ UI 事件 ──► KeyEvent{chr|control_key, modifiers, mode} ──► 服务�
 | 文件粘贴无效 | 服务端 `Union::Cliprdr` → `send_to_cm` 无人接收（本表第 1 节旁路未覆盖） |
 
 ## 7. landesk 自己引入的额外开销（上游没有）
-
 - `src/landesk/session.rs:155 on_rgba`：每帧做一次 `ARGB→RGBA` 全量转换并换新 `Arc<Frame>`（1080p ≈ 8MB/帧）。
 - 早期版本 GUI 还会 `clone()` 一帧（已改为 `Arc` 共享）。
 - 1080p@30fps 下这两步是 GB/s 级的内存带宽，VM 里会直接吃满 → 表现为“画面不跟手”而服务端 fps 正常。
+
+## 8. 日志在哪（找错地方会很浪费时间）
+
+release 构建写文件日志，路径由 `Config::log_path()` 决定，进程名作子目录：`<log>/<name>/<name>_rCURRENT.log`。
+
+- 普通用户进程：`%APPDATA%\lanDesk\log\<name>\`
+- **SYSTEM 服务进程**：`Config::get_home()` 里的 `patch()`（`libs/hbb_common/src/config.rs:469`）把 `system32\config\systemprofile` 改写成 `ServiceProfiles\LocalService`，所以真实位置是
+  `C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\lanDesk\log\server\`
+
+`--server` 的日志里能直接看到：`new encoder: VPX(...)`、`cpu num: N, ... codec thread: M`、`Option update: ...custom_fps`、`encode fail: no valid frame`、`Failed to read clipboard from cm`、`clipboard updated on host`。这些是判断"编码太慢 / QoS 降档 / 剪贴板读写失败"的第一手证据。
+
+## 9. 资源对帧率的影响（实测）
+
+`codec_thread_num()` 的上限是 `min(cpu/2, 可用内存/2)`，再按 CPU 占用估算，最后落到 1/2/4/8/16/32/64。1 个 vCPU 的虚拟机上，1080p VP8 软件编码只能到个位数帧率——这时客户端 `Set fps to N`、`Refresh display to reduce delay` 都是症状，不是原因。
