@@ -265,6 +265,16 @@ impl SessionHandle {
         }
     }
 
+    /// 编码器偏好：`auto` / `vp8` / `vp9` / `av1`（上游选项，下一次连接生效）。
+    pub fn codec_preference(&self) -> String {
+        self.session.get_option("codec-preference".to_owned())
+    }
+
+    pub fn set_codec_preference(&self, value: &str) {
+        self.session
+            .set_option("codec-preference".to_owned(), value.to_owned());
+    }
+
     /// 画质：`low` / `balanced` / `best` / `custom`（上游的取值）。
     pub fn set_image_quality(&self, value: &str) {
         self.session.save_image_quality(value.to_owned());
@@ -571,6 +581,14 @@ fn build_session(
         last_progress: Default::default(),
     };
     *session.ui_handler.session.lock().unwrap() = Some(session.clone());
+    // 编码器选择沿用上游的 `codec-preference` 选项（下游 `Decoder::preference` 读的就是它）。
+    // 上游默认 auto 会挑 AV1：VM 里单线程软编太慢，先给 vp9；用户可在界面里改。
+    {
+        let mut lc = session.lc.write().unwrap();
+        if lc.get_option("codec-preference").is_empty() {
+            lc.set_option("codec-preference".to_owned(), "vp9".to_owned());
+        }
+    }
     session
 }
 

@@ -514,6 +514,8 @@ impl App {
                         evt.down = true;
                         evt.press = true;
                         evt.mode = KeyboardMode::Legacy.into();
+                        // 远端靠这个字段判断“这是不是组合键”（has_hotkey_modifiers）。
+                        evt.modifiers = held_modifiers(alt, ctrl, shift);
                         session.send_key(&evt);
                     }
                 }
@@ -538,6 +540,7 @@ impl App {
                             evt.down = true;
                             evt.press = true;
                             evt.mode = KeyboardMode::Legacy.into();
+                            evt.modifiers = held_modifiers(alt, ctrl, shift);
                             session.send_key(&evt);
                         }
                     }
@@ -548,6 +551,25 @@ impl App {
         let _ = key_event::Union::Chr(0); // 保持对生成类型路径的引用，避免 cfg 差异导致未用告警
         let _ = MOUSE_BUTTON_RIGHT;
     }
+}
+
+/// 当前按着哪些修饰键（远端据此判定组合键）。
+fn held_modifiers(
+    alt: bool,
+    ctrl: bool,
+    shift: bool,
+) -> Vec<hbb_common::protobuf::EnumOrUnknown<ControlKey>> {
+    let mut held = Vec::new();
+    if ctrl {
+        held.push(ControlKey::Control.into());
+    }
+    if shift {
+        held.push(ControlKey::Shift.into());
+    }
+    if alt {
+        held.push(ControlKey::Alt.into());
+    }
+    held
 }
 
 /// 字母/数字/常见标点的字符形式，给“带修饰键的组合”用。
@@ -812,6 +834,23 @@ impl eframe::App for App {
                                     session.set_fps(fps);
                                 }
                             }
+                        }
+                    }
+                    // 编码器：上游的 codec-preference（下一次连接生效）。
+                    ui.separator();
+                    ui.label("Codec:");
+                    for value in ["auto", "vp8", "vp9", "av1"] {
+                        let current = self
+                            .session
+                            .as_ref()
+                            .map(|s| s.codec_preference())
+                            .unwrap_or_default();
+                        if ui.selectable_label(current == value, value).clicked() {
+                            if let Some(session) = &self.session {
+                                session.set_codec_preference(value);
+                            }
+                            self.log
+                                .push(format!("Codec preference set to {value} (takes effect on the next connect)"));
                         }
                     }
                 });
