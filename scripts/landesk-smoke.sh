@@ -8,13 +8,13 @@
 #
 # 另外断言：Service 没有启动上游 rendezvous（"无出站"）。
 #
-# 用法：先 cargo build -p rustdesk --bin rustdesk，然后
+# 用法：先 cargo build --bin landesk-server，然后
 #   bash scripts/landesk-smoke.sh            # 默认端口 21118
 #   PORT=31118 bash scripts/landesk-smoke.sh # 换端口（本机已有 Service 时）
 
 set -u
 
-BIN="${BIN:-./target/debug/rustdesk.exe}"
+BIN="${BIN:-./target/debug/landesk-server.exe}"
 PORT="${PORT:-21118}"
 ADDR="127.0.0.1:${PORT}"
 TMP="$(mktemp -d)"
@@ -33,7 +33,7 @@ fail() {
     exit 1
 }
 
-[ -x "$BIN" ] || { echo "先构建：cargo build -p rustdesk --bin rustdesk"; exit 1; }
+[ -x "$BIN" ] || { echo "先构建：cargo build --bin landesk-server"; exit 1; }
 
 echo "1/6 生成两把密钥对"
 "$BIN" --landesk-genkey "$TMP/master.key" > "$TMP/genkey.txt" 2>&1 || fail genkey

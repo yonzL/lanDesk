@@ -1502,7 +1502,13 @@ fn get_install_info_with_subkey(subkey: String) -> (String, String, String, Stri
         "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\{}",
         crate::get_app_name()
     );
-    let exe = format!("{}\\{}.exe", path, crate::get_app_name());
+    // 可执行文件名以“正在运行的这个 exe”为准，而不是拼 `{app_name}.exe`：
+    // landesk 的产物叫 landesk-server.exe，而 app name 是 lanDesk，两者不同。
+    let exe_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| format!("{}.exe", crate::get_app_name()));
+    let exe = format!("{}\\{}", path, exe_name);
     (subkey, path, start_menu, exe)
 }
 
@@ -1538,10 +1544,13 @@ pub fn rename_exe_cmd(src_exe: &str, path: &str) -> ResultType<String> {
         .ok_or(anyhow!("Can't get file name of {src_exe}"))?
         .to_string_lossy()
         .to_string();
-    let app_name = crate::get_app_name();
-    if src_exe_filename == format!("{app_name}.exe") {
+    // landesk 不改名：安装后服务与快捷方式指向的就是这个文件名。
+    if src_exe_filename.eq_ignore_ascii_case(&format!("{}.exe", crate::get_app_name()))
+        || crate::landesk::is_landesk()
+    {
         Ok("".to_owned())
     } else {
+        let app_name = crate::get_app_name();
         Ok(format!(
             "
         move /Y \"{path}\\{src_exe_filename}\" \"{path}\\{app_name}.exe\"

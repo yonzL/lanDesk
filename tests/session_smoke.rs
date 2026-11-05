@@ -1,7 +1,7 @@
 //! 会话冒烟：在本机起一个 Service，把同一份二进制当 Master 连上去，断言真的收到了画面帧。
 //!
 //! 这是"能不能远程看到画面"的可重复证据——不需要人手点界面。
-//! 需要先构建二进制；测试会用 `CARGO_BIN_EXE_rustdesk` 找到它。
+//! 需要先构建二进制；测试会用 `CARGO_BIN_EXE_landesk-server` 找到它。
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -65,7 +65,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn start_service(port: u16, pub_key: &str, log: PathBuf) -> Service {
-    let bin = env!("CARGO_BIN_EXE_rustdesk");
+    let bin = env!("CARGO_BIN_EXE_landesk-server");
     let out = std::fs::File::create(&log).expect("service log");
     let err = out.try_clone().expect("clone log handle");
     let child = Command::new(bin)
@@ -104,8 +104,8 @@ fn unique_port() -> u16 {
 }
 
 fn dump(path: &std::path::Path) {
-    if let Ok(text) = std::fs::read_to_string(path) {
-        eprintln!("--- {} ---\n{}", path.display(), text);
+    if let Ok(bytes) = std::fs::read(path) {
+        eprintln!("--- {} ---\n{}", path.display(), String::from_utf8_lossy(&bytes));
     }
 }
 
@@ -189,4 +189,68 @@ fn a_landesk_session_receives_a_frame() {
     assert!(first_frame_seq > 0, "no frame arrived within 60s");
     session.close();
     dump(&service.log);
+}
+
+#[test]
+fn the_peer_accepts_the_file_clipboard_option() {
+    let _guard = exclusive();
+    let _ = hbb_common::sodiumoxide::init();
+    init_logging();
+    let dir = temp_dir("clipboard-file");
+    let key_path = dir.join("private.key");
+    let book_path = dir.join("addressbook.json");
+    let keypair = GlobalKeyPair::generate();
+    keypair.save(&key_path).expect("save key");
+    let pub_key = public_key_hex(&keypair.pk);
+    let log = dir.join("service.log");
+
+    let port = unique_port();
+    let service = start_service(port, &pub_key, log.clone());
+    let addr = format!("127.0.0.1:{}", service.port);
+    let session = librustdesk::landesk::session::start(
+        addr.clone(),
+        book_path,
+        key_path,
+        true,
+    )
+    .expect("start session");
+
+    // 等会话真的立起来（首帧）再切开关。
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline && session.frame_seq() == 0 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(session.frame_seq() > 0, "no frame, session never started");
+
+    session.set_file_clipboard(true);
+    assert!(
+        session.file_clipboard_enabled(),
+        "the local toggle did not flip"
+    );
+
+    // 对端收到这个选项后会在日志里留下 `enable_file_transfer: Yes`。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = false;
+    let mut last_read_error = None;
+    while Instant::now() < deadline {
+        match std::fs::read(&log) {
+            Ok(bytes) => {
+                // 服务进程的控制台输出里混着非 UTF-8 字节（中文 Windows 的 GBK 提示），不能直接当字符串读。
+                if String::from_utf8_lossy(&bytes).contains("enable_file_transfer: Yes") {
+                    seen = true;
+                    break;
+                }
+            }
+            Err(err) => last_read_error = Some(err.to_string()),
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if !seen {
+        eprintln!("读取日志的最后一次错误：{last_read_error:?}");
+    }
+    session.close();
+    assert!(
+        seen,
+        "the peer never acknowledged the file clipboard option"
+    );
 }

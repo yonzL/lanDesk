@@ -214,6 +214,21 @@ impl SessionHandle {
         self.session.switch_display(display);
     }
 
+    /// 剪贴板传文件（Windows 双向，上游叫 file copy-paste）。
+    ///
+    /// 开了之后在资源管理器里复制文件、到远端粘贴就能直接落盘——这就是“剪贴板传文件”，
+    /// 不需要专设的文件传输会话。
+    pub fn file_clipboard_enabled(&self) -> bool {
+        self.session
+            .get_toggle_option("enable-file-copy-paste".to_owned())
+    }
+
+    pub fn set_file_clipboard(&self, on: bool) {
+        if self.file_clipboard_enabled() != on {
+            self.session.toggle_option("enable-file-copy-paste".to_owned());
+        }
+    }
+
     pub fn send_mouse(
         &self,
         mask: i32,

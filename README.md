@@ -38,8 +38,8 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 还不够“成品”的地方：
 
-- **文件传输没有接**。实测确认它要求专设的传输会话（`ConnType::FILE_TRANSFER`），同会话发文件会被对端忽略；要做需要另一个会话类型 + 一套传输界面。详见 `architecture.md` 的“已知边界”。
-- **剪贴板未进测试**（同机两进程共享一个剪贴板，无法区分是否有同步）。上游客户端的剪贴板循环已随会话启动，需两台机器试用确认。
+- **批量文件传输没做**。剪贴板传文件已可用（会话里自动开启 `enable-file-copy-paste`，在资源管理器复制文件、到远端粘贴就落盘），但真正的批量推送/拉取 + 文件操作（删除、移动、重命名、启动）需要专设的文件传输会话，是单独一刀；详见 `architecture.md` 的“已知边界”。
+- **文本剪贴板未进测试**（同机两进程共享一个剪贴板，无法区分是否真的同步）；文件通道已测到“对端确认开关”这一步。
 - 音频、终端未接；输入法/死键未覆盖。
 - `--install-service` 需要管理员，实际安装尚未验证；无代码签名。
 
@@ -51,12 +51,12 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 ```bash
 cargo check -p hbb_common --all-targets          # landesk 唯一改动的共享协议库
-cargo build -p rustdesk --bin rustdesk -p landesk-gui
+cargo build --bin landesk-server -p landesk-client
 cargo test  -p rustdesk --test session_smoke     # 端到端：真的收到一帧画面
 bash scripts/dist.sh                            # 打一个可拷给别人的包（需先 --release）
 ```
 
-静态 CRT + 静态 vcpkg，所以打包出来就是两个 exe，不依赖 DLL。`rustdesk.exe` 的双击启动会去拉起上游的 sciter 界面，需要 `sciter.dll`——landesk 模式下不要双击它，只用 `--server` / `--landesk-*` 这些参数。
+静态 CRT + 静态 vcpkg，所以打包出来就是两个 exe，不依赖 DLL。`landesk-server.exe` 的双击启动会去拉起上游的 sciter 界面，需要 `sciter.dll`——landesk 模式下不要双击它，只用 `--server` / `--landesk-*` 这些参数。
 
 CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 crate 的闸门要等裁剪到仅剩 Service 目标后再加。
 
@@ -85,16 +85,16 @@ cargo check -p rustdesk --lib
 
 ## 试用
 
-两台 Windows 机器，同一网段或 VPN 内。先在两台机器上都放一份 `rustdesk.exe`（`target/debug/rustdesk.exe`，或 `cargo build --release -p rustdesk --bin rustdesk` 后的 `target/release/`）。
+两台 Windows 机器，同一网段或 VPN 内。先在两台机器上都放一份 `landesk-server.exe`（`target/debug/landesk-server.exe`，或 `cargo build --release --bin landesk-server` 后的 `target/release/`）。
 
 **在被控机（Service）上做的前置：** 先在控制机上生成密钥对，把公钥拷过来。
 
 ```bash
 # 控制机（Master）上：生成全局密钥对，记下打印出的 public key
-rustdesk.exe --landesk-genkey master.key
+landesk-server.exe --landesk-genkey master.key
 
 # 被控机（Service）上：用那个公钥启动，监听 21118
-rustdesk.exe --server --landesk-listen 21118 --landesk-auth-key <公钥十六进制>
+landesk-server.exe --server --landesk-listen 21118 --landesk-auth-key <公钥十六进制>
 ```
 
 控制机需要能连到被控机的 21118（Windows 防火墙要先放行）。
@@ -108,10 +108,10 @@ cat > hosts.csv <<'EOF'
 办公室,开发组,工位-01,10.0.0.5:21118
 EOF
 
-rustdesk.exe --landesk-book-import hosts.csv     # 导入（按地址:端口覆盖式合并）
-rustdesk.exe --landesk-book-list                 # 看清单与每台的指纹状态
-rustdesk.exe --landesk-connect 10.0.0.5:21118    # 连过去
-rustdesk.exe --landesk-book-verify 10.0.0.5:21118 # 首次连过、核过指纹后标为已验证
+landesk-server.exe --landesk-book-import hosts.csv     # 导入（按地址:端口覆盖式合并）
+landesk-server.exe --landesk-book-list                 # 看清单与每台的指纹状态
+landesk-server.exe --landesk-connect 10.0.0.5:21118    # 连过去
+landesk-server.exe --landesk-book-verify 10.0.0.5:21118 # 首次连过、核过指纹后标为已验证
 ```
 
 默认地址簿是 exe 同目录的 `addressbook.json`，私钥是 `private.key`；两者都能用 `--landesk-book` / `--landesk-key` 换位置。
@@ -130,12 +130,12 @@ rustdesk.exe --landesk-book-verify 10.0.0.5:21118 # 首次连过、核过指纹�
 
 ```bash
 # 1. 先把参数落成配置：写到 exe 同目录的 landesk.json
-rustdesk.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-key <公钥十六进制>
+landesk-server.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-key <公钥十六进制>
 # 2. 装成 Windows 服务（上游自带，无需额外安装包）
-rustdesk.exe --install-service
+landesk-server.exe --install-service
 ```
 
-服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `rustdesk.exe --server` 也会读它。`landesk.json` 里就是两项：`listen_port` 与 `auth_key`。
+服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `landesk-server.exe --server` 也会读它。`landesk.json` 里就是两项：`listen_port` 与 `auth_key`。
 
 **本机自测（不用两台机器）：**
 
@@ -149,15 +149,15 @@ PORT=31218 bash scripts/landesk-smoke.sh   # 本机已有 Service 时换端口
 **图形界面（Master）：**
 
 ```bash
-cargo build -p landesk-gui      # 纯 Rust 窗口，不需要 Flutter
-./target/debug/landesk-gui.exe
+cargo build -p landesk-client      # 纯 Rust 窗口，不需要 Flutter
+./target/debug/landesk-client.exe
 ```
 
-左边是地址簿的组/子组树，选中一台后右側显示地址与指纹状态；“连接（申请操作权）”与“只看”两个按钮做的是同一件事——验证对面主机、用本机私钥证明自己——区别只在后者声明自己不发送输入。连上之后窗口里就是远端画面，鼠标、滚轮、可打印字符与 Ctrl/Shift/Alt 组合键会发过去；顶部有“断开”，对端有多块屏时还能选看哪一块。会话断开后窗口自动回到可重连的状态，底部日志里能看到原因。多台 Master 可以同时连一台 Service（同一把私钥），同时操作时后写入者生效。
+左边是地址簿的组/子组树，选中一台后右側显示地址与指纹状态；“连接（申请操作权）”与“只看”两个按钮做的是同一件事——验证对面主机、用本机私钥证明自己——区别只在后者声明自己不发送输入。连上之后窗口里就是远端画面，鼠标、滚轮、可打印字符、Ctrl/Shift/Alt 组合键与 F1–F12 会发过去；顶部有“断开”，对端有多块屏时还能选看哪一块。会话里会自动开启**剪贴板传文件**（在资源管理器复制文件，到远端粘贴就落盘）。会话断开后窗口自动回到可重连的状态，底部日志里能看到原因。多台 Master 可以同时连一台 Service（同一把私钥），同时操作时后写入者生效。
 
-这个窗口默认读写 exe 同目录的 `addressbook.json` 与 `private.key`——和命令行版一致（把两个文件放到 `landesk-gui.exe` 旁边即可）；CSV 导入仍然用命令行的 `--landesk-book-import`。
+这个窗口默认读写 exe 同目录的 `addressbook.json` 与 `private.key`——和命令行版一致（把两个文件放到 `landesk-client.exe` 旁边即可）；CSV 导入仍然用命令行的 `--landesk-book-import`。
 
-**打包给别人试：** `cargo build --release …` 后跑 `bash scripts/dist.sh`，得到 `dist/landesk-<日期>.zip`：里面只有两个 exe 与一页 `使用说明.txt`（静态 CRT + 静态 vcpkg，不依赖 DLL）。
+**打包给别人试：** `cargo build --release …` 后跑 `bash scripts/dist.sh`，得到 `dist/lanDesk-<日期>.zip`：里面只有两个 exe 与一页 `使用说明.txt`（静态 CRT + 静态 vcpkg，不依赖 DLL）。
 
 ## 许可
 

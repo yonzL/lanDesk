@@ -331,6 +331,11 @@ pub fn config() -> Option<&'static LandeskConfig> {
     CONFIG.get()
 }
 
+/// 这个进程是不是 landesk（而不是上游 RustDesk）：由产品名判定。
+pub fn is_landesk() -> bool {
+    hbb_common::config::APP_NAME.read().unwrap().eq("lanDesk")
+}
+
 /// landesk 模式是否接管了网络入口：配置了监听端口就不该再启动上游的 rendezvous。
 pub fn takes_over_network() -> bool {
     config()

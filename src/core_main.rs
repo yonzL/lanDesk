@@ -43,6 +43,9 @@ fn finish_macos_update(result: hbb_common::ResultType<()>) -> Option<CoreMainAct
 /// If it returns [`Some`], the action determines whether to start the UI or report failure.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<CoreMainAction> {
+    // landesk 的产品身份：配置目录、日志、服务名、托盘与 IPC 管道都跟着这个名字走。
+    // 也正因为 app name 不是 "RustDesk"，上游的更新检查会自动关掉（`is_custom_client()`）。
+    *hbb_common::config::APP_NAME.write().unwrap() = "lanDesk".to_owned();
     if !crate::common::global_init() {
         return None;
     }
