@@ -170,6 +170,18 @@ impl App {
         }
     }
 
+    /// 首次使用的两件事：有没有私钥、地址簿里有没有东西。
+    fn draw_first_run_hints(&self, ui: &mut egui::Ui) {
+        if !self.key_path.is_file() {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                format!("还没有私钥：{}", self.key_path.display()),
+            );
+            ui.small("在被控机上跑一次 --landesk-genkey master.key，把生成的 private.key 放到这里。");
+            ui.add_space(6.0);
+        }
+    }
+
     fn pin_state(&self, addr: &str) -> (String, bool) {
         match self.book.pins().get(addr) {
             None => ("未连接过".to_owned(), false),
@@ -699,6 +711,8 @@ impl eframe::App for App {
 
             let Some(addr) = self.selected.clone() else {
                 ui.label("从左边的地址簿里选一台机器。");
+                ui.add_space(6.0);
+                self.draw_first_run_hints(ui);
                 return;
             };
 
