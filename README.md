@@ -7,14 +7,13 @@
 
 ## 文档
 
-设计先于代码。仓库当前只有设计，没有实现。
-
 | 文档 | 内容 |
 |---|---|
 | [`goal-and-requirements.md`](goal-and-requirements.md) | 产品目标、能力清单、非目标、与 RustDesk / SubnetDesk / Veyon 的差别 |
-| [`architecture.md`](architecture.md) | 直连传输、双挑战身份与 TOFU 指纹、并发模型、RustDesk 模块取舍 |
+| [`architecture.md`](architecture.md) | 直连传输、双挑战身份与 TOFU 指纹、并发模型、会话接线、RustDesk 模块取舍、已知边界 |
+| [`todo.md`](todo.md) | 已完成 / 未完成的工作清单（工作追踪，不是规格） |
 
-两份文档都是活的：能力变了、边界动了，就在同一次改动里更新它们。
+前两份是 durable spec，都是活的：能力变了、边界动了，就在同一次改动里更新它们。`todo.md` 只回答“做到哪了、还差什么”。
 
 ## 与上游的关系
 
