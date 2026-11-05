@@ -95,6 +95,14 @@ impl AddressBook {
         }
     }
 
+    /// 删掉一个条目，顺带丢掉它的指纹，下次连接重新走首次信任。
+    pub fn remove(&mut self, addr: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.addr != addr);
+        self.pins.forget(addr);
+        self.entries.len() != before
+    }
+
     /// 指纹库：首次连接自动记录、指纹变化即拒的逻辑都在这里。
     pub fn pin_or_check(&mut self, addr: &str, host_pk: &sign::PublicKey) -> PinOutcome {
         self.pins.pin_or_check(addr, host_pk)
@@ -110,6 +118,11 @@ impl AddressBook {
 
     pub fn mark_verified(&mut self, addr: &str) -> bool {
         self.pins.mark_verified(addr)
+    }
+
+    /// 忘掉某个地址的指纹记录（删条目时用）。
+    pub fn forget(&mut self, addr: &str) -> bool {
+        self.pins.forget(addr)
     }
 
     pub fn fingerprint_of(&self, addr: &str) -> Option<&str> {
@@ -369,6 +382,24 @@ mod tests {
             .merge_csv("组,子组,显示名,地址\n\"办公室,开发组,工位,10.0.0.5:21118\n")
             .unwrap_err();
         assert!(err.to_string().contains("引号"), "{err}");
+    }
+
+    #[test]
+    fn removing_an_entry_also_drops_its_fingerprint() {
+        let _ = hbb_common::sodiumoxide::init();
+        let (pk, _) = sign::gen_keypair();
+        let mut book = AddressBook::default();
+        book.upsert(entry("10.0.0.5:21118", "工位"));
+        book.pin_or_check("10.0.0.5:21118", &pk);
+        assert!(book.fingerprint_of("10.0.0.5:21118").is_some());
+
+        assert!(book.remove("10.0.0.5:21118"));
+        assert!(book.get("10.0.0.5:21118").is_none());
+        assert!(
+            book.fingerprint_of("10.0.0.5:21118").is_none(),
+            "删除条目后指纹也要丢，下次连接重新走首次信任"
+        );
+        assert!(!book.remove("10.0.0.5:21118"), "重复删除应返回 false");
     }
 
     #[test]

@@ -56,6 +56,8 @@ struct App {
     /// 要推的文件，一行一个本机路径。
     distribute_files: String,
     distribution: Option<librustdesk::landesk::session::Distribution>,
+    /// 正在编辑的条目（`None` 表示没在编辑）。
+    editing: Option<Entry>,
 }
 
 impl App {
@@ -81,6 +83,7 @@ impl App {
             distribute_dir: "C:\\landesk-incoming".to_owned(),
             distribute_files: String::new(),
             distribution: None,
+            editing: None,
         };
         app.reload();
         app
@@ -645,6 +648,60 @@ impl eframe::App for App {
                 ui.label("从左边的地址簿里选一台机器。");
                 return;
             };
+
+            // 编辑中：就地显示表单。
+            if let Some(mut draft) = self.editing.clone() {
+                ui.add_space(6.0);
+                ui.heading(if draft.addr.is_empty() {
+                    "新增机器".to_owned()
+                } else {
+                    format!("编辑 {}", draft.addr)
+                });
+                egui::Grid::new("entry-form")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("组");
+                        ui.text_edit_singleline(&mut draft.group);
+                        ui.end_row();
+                        ui.label("子组");
+                        ui.text_edit_singleline(&mut draft.subgroup);
+                        ui.end_row();
+                        ui.label("显示名");
+                        ui.text_edit_singleline(&mut draft.name);
+                        ui.end_row();
+                        ui.label("地址:端口");
+                        ui.text_edit_singleline(&mut draft.addr);
+                        ui.end_row();
+                    });
+                self.editing = Some(draft.clone());
+                ui.add_space(6.0);
+                let valid = draft.addr.contains(':') && !draft.addr.trim().is_empty();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(valid, egui::Button::new("保存"))
+                        .clicked()
+                    {
+                        self.book.upsert(draft.clone());
+                        match self.book.save(&self.book_path) {
+                            Ok(()) => {
+                                self.log.push(format!("已保存条目 {}", draft.addr));
+                                self.selected = Some(draft.addr.clone());
+                                self.editing = None;
+                                self.reload();
+                            }
+                            Err(err) => self.log.push(format!("保存地址簿失败：{err:#}")),
+                        }
+                    }
+                    if ui.button("取消").clicked() {
+                        self.editing = None;
+                    }
+                    if !valid {
+                        ui.small("地址要带端口，例如 10.0.0.5:21118");
+                    }
+                });
+                return;
+            }
             let Some(entry) = self.book.get(&addr).cloned() else {
                 return;
             };
@@ -677,10 +734,34 @@ impl eframe::App for App {
                     self.mark_verified(&addr);
                 }
             });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("编辑").clicked() {
+                    self.editing = Some(entry.clone());
+                }
+                if ui
+                    .button("删除")
+                    .on_hover_text("连同它的主机指纹一起丢掉，下次连接重新走首次信任")
+                    .clicked()
+                {
+                    let removed = self.book.remove(&addr);
+                    match self.book.save(&self.book_path) {
+                        Ok(()) if removed => {
+                            self.log.push(format!("已删除条目 {addr}"));
+                            self.selected = None;
+                            self.reload();
+                        }
+                        Ok(()) => self.log.push(format!("{addr} 不在地址簿里")),
+                        Err(err) => self.log.push(format!("保存地址簿失败：{err:#}")),
+                    }
+                }
+                if ui.button("新增条目").clicked() {
+                    self.editing = Some(Entry::default());
+                }
+            });
             ui.add_space(12.0);
             ui.separator();
             ui.label(format!("私钥：{}", self.key_path.display()));
             ui.small("私钥与地址簿都在本程序同目录；换位置用命令行参数 --landesk-key / --landesk-book。");
-        });
-    }
+        });    }
 }
