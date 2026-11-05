@@ -200,7 +200,20 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         }
     }
     *args = rest;
-    // 没有显式给公钥时，默认读程序同目录的 public.key——装 Service 时只要把这个文件拷过去。
+    // 命令行没给 landesk 参数时，读可执行文件同目录的 landesk.json。
+    // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
+    // 必须排在 public.key 自动读取**之前**：那个文件常年存在，先读它会让整份 JSON 被跳过。
+    if listen_port.is_none() && auth_pk.is_none() {
+        if let Some((port, pk, nets)) = load_config_file() {
+            listen_port = port;
+            auth_pk = pk;
+            if allowed_networks.is_empty() {
+                allowed_networks = nets;
+            }
+        }
+    }
+
+    // 还是没有公钥时，默认读程序同目录的 public.key——装 Service 时只要把这个文件拷过去。
     if auth_pk.is_none() {
         let candidate = exe_dir().join("public.key");
         if candidate.is_file() {
@@ -210,18 +223,6 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                     "landesk: using the public key from {}",
                     candidate.display()
                 );
-            }
-        }
-    }
-
-    // 命令行没给 landesk 参数时，读可执行文件同目录的 landesk.json。
-    // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
-    if listen_port.is_none() && auth_pk.is_none() {
-        if let Some((port, pk, nets)) = load_config_file() {
-            listen_port = port;
-            auth_pk = pk;
-            if allowed_networks.is_empty() {
-                allowed_networks = nets;
             }
         }
     }
