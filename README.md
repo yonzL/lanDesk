@@ -157,6 +157,8 @@ cargo build -p landesk-client      # 纯 Rust 窗口，不需要 Flutter
 
 这个窗口默认读写 exe 同目录的 `addressbook.json` 与 `private.key`——和命令行版一致（把两个文件放到 `landesk-client.exe` 旁边即可）；CSV 导入仍然用命令行的 `--landesk-book-import`。
 
+**文件分发（扇出）：** 窗口顶部切到「文件分发」标签，在左侧地址簿里勾选多台目标，填远端目录和要推的文件（一行一个本机路径），点「开始分发」。每台一个独立的文件会话并行推同一批文件，进度逐台显示；失败会给出原因。同一页面也支持下载与文件操作（删除/改名/新建目录），目前通过 `landesk-server.exe` 的文件会话 API 驱动（界面暂只做了分发）。
+
 **打包给别人试：** `cargo build --release …` 后跑 `bash scripts/dist.sh`，得到 `dist/lanDesk-<日期>.zip`：里面只有两个 exe 与一页 `使用说明.txt`（静态 CRT + 静态 vcpkg，不依赖 DLL）。
 
 ## 许可
