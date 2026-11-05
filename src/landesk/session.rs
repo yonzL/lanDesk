@@ -275,6 +275,8 @@ impl SessionHandle {
     pub fn set_codec_preference(&self, value: &str) {
         self.session
             .set_option("codec-preference".to_owned(), value.to_owned());
+        // 上游在 Flutter 里接着调这个，否则只改了配置、本次会话不变。
+        self.session.update_supported_decodings();
     }
 
     /// 画质：`low` / `balanced` / `best` / `custom`（上游的取值）。
@@ -583,8 +585,24 @@ fn build_session(
         last_progress: Default::default(),
     };
     *session.ui_handler.session.lock().unwrap() = Some(session.clone());
-    // 编码器选择沿用上游的 `codec-preference` 选项（下游 `Decoder::preference` 读的就是它）。
-    // 上游默认 auto 会挑 AV1：VM 里单线程软编太慢，先给 vp9；用户可在界面里改。
+    // 编码器默认值必须写进**这个 peer 的 PeerConfig**：登录消息里的 `prefer` 来自
+    // `Decoder::preference(id)` → `PeerConfig::load(id)`，而此时 `LoginConfigHandler` 还没
+    // initialize（id 为空），在 session 上 `set_option` 落不到对端那份配置里。
+    // 上游 `auto` 会挑 AV1——软编最慢的一个，VM 上直接掉帧。
+    {
+        use hbb_common::config::PeerConfig;
+        let mut config = PeerConfig::load(peer);
+        if config
+            .options
+            .get("codec-preference")
+            .map_or(true, |v| v.is_empty())
+        {
+            config
+                .options
+                .insert("codec-preference".to_owned(), "vp9".to_owned());
+            config.store(peer);
+        }
+    }
     {
         let mut lc = session.lc.write().unwrap();
         if lc.get_option("codec-preference").is_empty() {
