@@ -438,3 +438,59 @@ fn the_same_files_reach_two_services() {
         }
     }
 }
+
+/// 连一台**外部**机器（例如 Windows VM），断言真的收到帧。
+///
+/// 需要两个环境变量，没有就跳过（在 CI 里不会失败）：
+///   LANDESK_PEER=192.168.99.239:21118
+///   LANDESK_KEY=/绝对路径/master.key
+/// 可选 `LANDESK_HOLD_SECS=30` 让会话保持这么久，便于同时做剪贴板实验。
+#[test]
+fn the_external_peer_serves_frames() {
+    let Ok(peer) = std::env::var("LANDESK_PEER") else {
+        eprintln!("跳过：没有设置 LANDESK_PEER");
+        return;
+    };
+    let Ok(key_path) = std::env::var("LANDESK_KEY") else {
+        eprintln!("跳过：没有设置 LANDESK_KEY");
+        return;
+    };
+    let _guard = exclusive();
+    let _ = hbb_common::sodiumoxide::init();
+    init_logging();
+    let hold: u64 = std::env::var("LANDESK_HOLD_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let dir = temp_dir("external");
+    let book_path = dir.join("addressbook.json");
+    let session = librustdesk::landesk::session::start(
+        peer.clone(),
+        book_path.clone(),
+        PathBuf::from(&key_path),
+        true,
+    )
+    .expect("start session");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline && session.frame_seq() == 0 && !session.is_closed() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(!session.is_closed(), "会话在收到画面之前就结束了");
+    assert!(session.frame_seq() > 0, "60 秒内没有收到画面");
+    let frame = session.latest_frame().expect("frame");
+    eprintln!(
+        "{} 的画面：{}x{}（{} 字节）",
+        peer,
+        frame.width,
+        frame.height,
+        frame.rgba.len()
+    );
+
+    if hold > 0 {
+        eprintln!("保持会话 {hold} 秒，便于同时做剪贴板等实验");
+        std::thread::sleep(Duration::from_secs(hold));
+    }
+    session.close();
+}
