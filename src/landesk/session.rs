@@ -238,6 +238,20 @@ impl SessionHandle {
         }
     }
 
+    /// 画质：`low` / `balanced` / `best` / `custom`（上游的取值）。
+    pub fn set_image_quality(&self, value: &str) {
+        self.session.save_image_quality(value.to_owned());
+    }
+
+    pub fn image_quality(&self) -> String {
+        self.session.get_image_quality()
+    }
+
+    /// 帧率上限；只在画质为 `custom` 时单独生效（上游的语义）。
+    pub fn set_fps(&self, fps: i32) {
+        self.session.set_custom_fps(fps);
+    }
+
     pub fn send_mouse(
         &self,
         mask: i32,

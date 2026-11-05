@@ -58,6 +58,9 @@ struct App {
     distribution: Option<librustdesk::landesk::session::Distribution>,
     /// 正在编辑的条目（`None` 表示没在编辑）。
     editing: Option<Entry>,
+    /// 当前画质与帧率（镜像会话里的取值，用于界面高亮）。
+    quality: String,
+    fps: i32,
 }
 
 impl App {
@@ -84,6 +87,8 @@ impl App {
             distribute_files: String::new(),
             distribution: None,
             editing: None,
+            quality: "balanced".to_owned(),
+            fps: 30,
         };
         app.reload();
         app
@@ -634,6 +639,37 @@ impl eframe::App for App {
                                 self.last_frame_seq = 0;
                                 if let Some(session) = &self.session {
                                     session.switch_display(index);
+                                }
+                            }
+                        }
+                    }
+                    // 画质与帧率：真实网络里这决定好不好用。
+                    ui.separator();
+                    ui.label("画质：");
+                    for (value, label) in [
+                        ("low", "低"),
+                        ("balanced", "均衡"),
+                        ("best", "最佳"),
+                        ("custom", "自定义"),
+                    ] {
+                        if ui.selectable_label(self.quality == value, label).clicked() {
+                            self.quality = value.to_owned();
+                            if let Some(session) = &self.session {
+                                session.set_image_quality(value);
+                            }
+                        }
+                    }
+                    if self.quality == "custom" {
+                        ui.label(" 帧率：");
+                        for fps in [15, 30, 60] {
+                            if ui
+                                .selectable_label(self.fps == fps, fps.to_string())
+                                .clicked()
+                                && self.fps != fps
+                            {
+                                self.fps = fps;
+                                if let Some(session) = &self.session {
+                                    session.set_fps(fps);
                                 }
                             }
                         }
