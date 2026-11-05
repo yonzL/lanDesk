@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'SilentlyContinue'
-$out = 'C:\lanDesk\clip-report.txt'
+$out = Join-Path $PSScriptRoot 'clip-report.txt'
 $sid = (Get-Process -Id $PID).SessionId
 $text = Get-Clipboard -Raw
 $files = Get-Clipboard -Format FileDropList
