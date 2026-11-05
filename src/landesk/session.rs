@@ -615,6 +615,10 @@ fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::at
         let mut last_sent: Vec<u8> = Vec::new();
         while !closed.load(std::sync::atomic::Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(400));
+            // 会话里关了剪贴板就别再往对端发（与上游 `disable-clipboard` 语义一致）。
+            if session.get_toggle_option("disable-clipboard".to_owned()) {
+                continue;
+            }
             let Some(msg) = crate::clipboard::check_clipboard(
                 &mut ctx,
                 crate::clipboard::ClipboardSide::Client,
