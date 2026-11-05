@@ -254,3 +254,187 @@ fn the_peer_accepts_the_file_clipboard_option() {
         "the peer never acknowledged the file clipboard option"
     );
 }
+
+/// 文件会话：列举、上传、改名、新建目录、删除、下载。
+#[test]
+fn the_file_session_lists_and_manages_files() {
+    let _guard = exclusive();
+    let _ = hbb_common::sodiumoxide::init();
+    init_logging();
+    let dir = temp_dir("file-session");
+    let key_path = dir.join("private.key");
+    let book_path = dir.join("addressbook.json");
+    let keypair = GlobalKeyPair::generate();
+    keypair.save(&key_path).expect("save key");
+    let pub_key = public_key_hex(&keypair.pk);
+
+    let remote_dir = dir.join("remote");
+    std::fs::create_dir_all(&remote_dir).expect("mkdir remote");
+    std::fs::write(remote_dir.join("hello.txt"), b"remote file\n").expect("write remote file");
+    let local_dir = dir.join("local");
+    std::fs::create_dir_all(&local_dir).expect("mkdir local");
+    let local_file = local_dir.join("upload.txt");
+    std::fs::write(&local_file, b"uploaded\n").expect("write local file");
+    let remote_dir_s = remote_dir.to_string_lossy().to_string();
+    let local_dir_s = local_dir.to_string_lossy().to_string();
+
+    let port = unique_port();
+    let service = start_service(port, &pub_key, dir.join("service.log"));
+    let addr = format!("127.0.0.1:{}", service.port);
+    let file = librustdesk::landesk::session::start_file_transfer(
+        addr.clone(),
+        book_path,
+        key_path,
+        true,
+        remote_dir_s.clone(),
+    )
+    .expect("start file session");
+
+    let wait_for = |what: &str, check: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if check() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        panic!("timed out waiting for {what}");
+    };
+
+    // 1) 列目录
+    let mut names: Vec<String> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        file.list(&remote_dir_s);
+        std::thread::sleep(Duration::from_millis(200));
+        if let Some(listing) = file.take_listing() {
+            names = listing.entries.iter().map(|e| e.name.clone()).collect();
+            if names.iter().any(|n| n == "hello.txt") {
+                break;
+            }
+        }
+    }
+    assert!(
+        names.iter().any(|n| n == "hello.txt"),
+        "remote listing did not include hello.txt: {names:?}"
+    );
+
+    // 2) 上传：to 带文件名（上游约定）
+    let uploaded = remote_dir.join("upload.txt");
+    file.upload(
+        &local_file.to_string_lossy(),
+        &uploaded.to_string_lossy(),
+    );
+    wait_for("upload", &|| uploaded.exists());
+    assert_eq!(std::fs::read(&uploaded).expect("read upload"), b"uploaded\n");
+
+    // 3) 改名
+    let renamed = remote_dir.join("upload-renamed.txt");
+    file.rename(&uploaded.to_string_lossy(), "upload-renamed.txt");
+    wait_for("rename", &|| renamed.exists() && !uploaded.exists());
+
+    // 4) 删除
+    file.delete(&renamed.to_string_lossy(), false);
+    wait_for("delete", &|| !renamed.exists());
+
+    // 5) 新建目录
+    let new_dir = remote_dir.join("sub");
+    file.create_dir(&new_dir.to_string_lossy());
+    wait_for("create dir", &|| new_dir.exists());
+
+    // 6) 下载：to 带文件名
+    let downloaded = local_dir.join("hello.txt");
+    file.download(
+        &remote_dir.join("hello.txt").to_string_lossy(),
+        &downloaded.to_string_lossy(),
+    );
+    wait_for("download", &|| downloaded.exists());
+
+    file.close();
+}
+
+/// 扇出：同一批文件同时推给两台 Service，两台都要落地。
+#[test]
+fn the_same_files_reach_two_services() {
+    let _guard = exclusive();
+    let _ = hbb_common::sodiumoxide::init();
+    init_logging();
+    let dir = temp_dir("fanout");
+    let key_path = dir.join("private.key");
+    let book_path = dir.join("addressbook.json");
+    let keypair = GlobalKeyPair::generate();
+    keypair.save(&key_path).expect("save key");
+    let pub_key = public_key_hex(&keypair.pk);
+
+    // 两台 Service 共用一把公钥，各自一个远端目录。
+    let mut services = Vec::new();
+    let mut peers = Vec::new();
+    let mut remote_dirs = Vec::new();
+    for index in 0..2 {
+        let remote = dir.join(format!("remote-{index}"));
+        std::fs::create_dir_all(&remote).expect("mkdir remote");
+        let port = unique_port();
+        services.push(start_service(port, &pub_key, dir.join(format!("service-{index}.log"))));
+        peers.push(format!("127.0.0.1:{}", port));
+        remote_dirs.push(remote);
+    }
+
+    // 同一批文件（两个）。
+    let mut files = Vec::new();
+    for name in ["one.txt", "two.txt"] {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("content of {name}\n")).expect("write source");
+        files.push(path.to_string_lossy().to_string());
+    }
+
+    // 两台的目标目录不同，所以分两次分发（同一批文件、各自的目标目录）。
+    for (peer, remote) in peers.iter().zip(remote_dirs.iter()) {
+        let distribution = librustdesk::landesk::session::distribute(
+            vec![peer.clone()],
+            book_path.clone(),
+            key_path.clone(),
+            files.clone(),
+            remote.to_string_lossy().to_string(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline && !distribution.finished() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let report = distribution.snapshot().remove(0);
+        assert_eq!(
+            report.failed, 0,
+            "{} 失败：{:?}",
+            report.peer, report.last_error
+        );
+        assert_eq!(report.done, files.len(), "{} 完成数不对", report.peer);
+    }
+
+    // 单次调用推多台（共用同一个目标目录）——这才是扇出的真实形状。
+    let shared = dir.join("shared-incoming");
+    std::fs::create_dir_all(&shared).expect("mkdir shared");
+    let distribution = librustdesk::landesk::session::distribute(
+        peers.clone(),
+        book_path.clone(),
+        key_path.clone(),
+        files.clone(),
+        shared.to_string_lossy().to_string(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline && !distribution.finished() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    for report in distribution.snapshot() {
+        assert_eq!(report.failed, 0, "{} 失败：{:?}", report.peer, report.last_error);
+    }
+
+    for remote in &remote_dirs {
+        for name in ["one.txt", "two.txt"] {
+            let landed = remote.join(name);
+            assert!(landed.exists(), "{} 没落地", landed.display());
+            assert_eq!(
+                std::fs::read(&landed).expect("read"),
+                format!("content of {name}\n").as_bytes()
+            );
+        }
+    }
+}

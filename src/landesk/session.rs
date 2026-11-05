@@ -57,6 +57,7 @@ pub struct LandeskUi {
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
     last_progress: Arc<Mutex<u32>>,
+    listings: Arc<Mutex<Vec<FileListing>>>,
 }
 
 impl LandeskUi {
@@ -101,11 +102,19 @@ impl InvokeUiSession for LandeskUi {
     fn update_folder_files(
         &self,
         _id: i32,
-        _entries: &Vec<FileEntry>,
-        _path: String,
-        _is_local: bool,
-        _only_count: bool,
+        entries: &Vec<FileEntry>,
+        path: String,
+        is_local: bool,
+        only_count: bool,
     ) {
+        if only_count {
+            return;
+        }
+        self.listings.lock().unwrap().push(FileListing {
+            path,
+            is_remote: !is_local,
+            entries: entries.clone(),
+        });
     }
     fn confirm_delete_files(&self, _id: i32, _i: i32, _name: String) {}
     fn override_file_confirm(
@@ -255,19 +264,8 @@ impl SessionHandle {
 ///
 /// 连接本身由 `Client::_start` 里的 landesk 分支取，走的是我们已认证的那条流。
 pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> ResultType<SessionHandle> {
-    register_target(&peer, Target { book, key, control });
-
-    let frames = Arc::new(Mutex::new(None));
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let displays = Arc::new(Mutex::new(Vec::new()));
-    let mut session = Session::<LandeskUi>::default();
-    session.ui_handler = LandeskUi {
-        frames: frames.clone(),
-        seq: Default::default(),
-        messages: messages.clone(),
-        displays: displays.clone(),
-        last_progress: Default::default(),
-    };
+    let shared = Shared::new();
+    let session = build_session(&peer, &book, &key, control, &shared);
     session.lc.write().unwrap().initialize(
         peer.clone(),
         ConnType::DEFAULT_CONN,
@@ -277,20 +275,336 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
         None,
         None,
     );
-    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let handle = SessionHandle {
-        frames: frames.clone(),
-        messages,
-        closed: closed.clone(),
-        displays,
+        frames: shared.frames.clone(),
+        messages: shared.messages.clone(),
+        closed: shared.closed.clone(),
+        displays: shared.displays.clone(),
         session: session.clone(),
     };
+    spawn_session(session, shared.closed.clone());
+    Ok(handle)
+}
 
+/// 一次文件会话的结果快照。
+#[derive(Debug, Clone)]
+pub struct FileListing {
+    pub path: String,
+    pub is_remote: bool,
+    pub entries: Vec<FileEntry>,
+}
+
+/// 文件会话的把手：浏览远端目录，并往里推文件。
+pub struct FileSessionHandle {
+    messages: Arc<Mutex<Vec<String>>>,
+    listings: Arc<Mutex<Vec<FileListing>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    session: Session<LandeskUi>,
+}
+
+impl FileSessionHandle {
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn drain_messages(&self) -> Vec<String> {
+        std::mem::take(&mut *self.messages.lock().unwrap())
+    }
+
+    pub fn take_listing(&self) -> Option<FileListing> {
+        self.listings.lock().unwrap().pop()
+    }
+
+    /// 列举远端目录（结果通过 `take_listing` 取）。
+    pub fn list(&self, path: &str) {
+        use crate::client::file_trait::FileManager;
+        self.session
+            .set_option("remote_dir".to_owned(), path.to_owned());
+        self.session.read_remote_dir(path.to_owned(), false);
+    }
+
+    /// 把一个本机路径推到远端的**完整目标路径**（含文件名）。
+    ///
+    /// 参数约定与上游界面一致：`to` = 目标目录 + 名字，`file_num = 0`。
+    pub fn upload(&self, local_path: &str, remote_dest: &str) {
+        use crate::client::file_trait::FileManager;
+        let job_id = base::fs::get_next_job_id();
+        self.session.send_files(
+            job_id,
+            base::fs::JobType::Generic as i32,
+            local_path.to_owned(),
+            remote_dest.to_owned(),
+            0,
+            false,
+            false,
+        );
+    }
+
+    /// 把远端路径拉到本机目录（`to` 同样带名字）。
+    pub fn download(&self, remote_path: &str, local_dest: &str) {
+        use crate::client::file_trait::FileManager;
+        let job_id = base::fs::get_next_job_id();
+        self.session.send_files(
+            job_id,
+            base::fs::JobType::Generic as i32,
+            remote_path.to_owned(),
+            local_dest.to_owned(),
+            0,
+            false,
+            true,
+        );
+    }
+
+    pub fn delete(&self, remote_path: &str, is_dir: bool) {
+        use crate::client::file_trait::FileManager;
+        let job_id = base::fs::get_next_job_id();
+        if is_dir {
+            self.session.remove_dir(job_id, remote_path.to_owned(), true);
+        } else {
+            self.session
+                .remove_file(job_id, remote_path.to_owned(), 0, true);
+        }
+    }
+
+    /// 改名或移动（`new_name` 为相对当前目录的新名字）。
+    pub fn rename(&self, remote_path: &str, new_name: &str) {
+        use crate::client::file_trait::FileManager;
+        let act_id = base::fs::get_next_job_id();
+        self.session
+            .rename_file(act_id, remote_path.to_owned(), new_name.to_owned(), true);
+    }
+
+    pub fn create_dir(&self, remote_path: &str) {
+        use crate::client::file_trait::FileManager;
+        let job_id = base::fs::get_next_job_id();
+        self.session
+            .create_dir(job_id, remote_path.to_owned(), true);
+    }
+
+    pub fn close(&self) {
+        self.session.close();
+    }
+}
+
+/// 起一次文件会话：同一个 peer、同一条已认证的路，只是登录成 `FILE_TRANSFER`。
+pub fn start_file_transfer(
+    peer: String,
+    book: PathBuf,
+    key: PathBuf,
+    control: bool,
+    remote_dir: String,
+) -> ResultType<FileSessionHandle> {
+    let shared = Shared::new();
+    let session = build_session(&peer, &book, &key, control, &shared);
+    {
+        let mut lc = session.lc.write().unwrap();
+        lc.initialize(
+            peer.clone(),
+            ConnType::FILE_TRANSFER,
+            None,
+            false,
+            None,
+            None,
+            None,
+        );
+        lc.set_option("remote_dir".to_owned(), remote_dir);
+    }
+    let handle = FileSessionHandle {
+        messages: shared.messages.clone(),
+        listings: shared.listings.clone(),
+        closed: shared.closed.clone(),
+        session: session.clone(),
+    };
+    spawn_session(session, shared.closed.clone());
+    Ok(handle)
+}
+
+/// 一次会话里被界面读走的共享数据。
+struct Shared {
+    frames: Arc<Mutex<Option<Frame>>>,
+    messages: Arc<Mutex<Vec<String>>>,
+    displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
+    listings: Arc<Mutex<Vec<FileListing>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Shared {
+    fn new() -> Self {
+        Self {
+            frames: Arc::new(Mutex::new(None)),
+            messages: Arc::new(Mutex::new(Vec::new())),
+            displays: Arc::new(Mutex::new(Vec::new())),
+            listings: Arc::new(Mutex::new(Vec::new())),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+
+fn build_session(
+    peer: &str,
+    book: &PathBuf,
+    key: &PathBuf,
+    control: bool,
+    shared: &Shared,
+) -> Session<LandeskUi> {
+    register_target(
+        peer,
+        Target {
+            book: book.clone(),
+            key: key.clone(),
+            control,
+        },
+    );
+    let mut session = Session::<LandeskUi>::default();
+    session.ui_handler = LandeskUi {
+        frames: shared.frames.clone(),
+        seq: Default::default(),
+        messages: shared.messages.clone(),
+        displays: shared.displays.clone(),
+        listings: shared.listings.clone(),
+        last_progress: Default::default(),
+    };
+    session
+}
+
+fn spawn_session(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::AtomicBool>) {
     std::thread::spawn(move || {
         // 用上游真正的会话入口：它会建好 Data 通道并把 `handler.sender` 接上。
         // （直接用内层 `Remote` 会让 `Session::send` 静默丢弃，输入与文件都发不出去。）
         crate::ui_session_interface::io_loop(session, 0);
         closed.store(true, std::sync::atomic::Ordering::Relaxed);
     });
-    Ok(handle)
+}
+
+/// 一台目标机器的分发进度。
+#[derive(Debug, Clone)]
+pub struct TargetReport {
+    pub peer: String,
+    pub total: usize,
+    pub done: usize,
+    pub failed: usize,
+    /// 最近一条失败原因（有就说明这台出过问题）。
+    pub last_error: Option<String>,
+}
+
+/// 一次扇出分发：同一批文件同时推给多台 Service。
+pub struct Distribution {
+    reports: Arc<Mutex<Vec<TargetReport>>>,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Distribution {
+    /// 当前的逐台进度快照。
+    pub fn snapshot(&self) -> Vec<TargetReport> {
+        self.reports.lock().unwrap().clone()
+    }
+
+    pub fn finished(&self) -> bool {
+        self.finished.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// 把 `files`（本机路径）逐个推到每台 `peers` 上的 `remote_dir`。
+///
+/// 每台机器一个独立的文件会话，彼此并行；这条调用立即返回，进度从 `Distribution` 里读。
+pub fn distribute(
+    peers: Vec<String>,
+    book: PathBuf,
+    key: PathBuf,
+    files: Vec<String>,
+    remote_dir: String,
+) -> Distribution {
+    let reports = Arc::new(Mutex::new(
+        peers
+            .iter()
+            .map(|peer| TargetReport {
+                peer: peer.clone(),
+                total: files.len(),
+                done: 0,
+                failed: 0,
+                last_error: None,
+            })
+            .collect::<Vec<_>>(),
+    ));
+    let finished = Arc::new(std::sync::atomic::AtomicBool::new(peers.is_empty()));
+    let mut handles = Vec::new();
+    for (index, peer) in peers.into_iter().enumerate() {
+        let reports = reports.clone();
+        let book = book.clone();
+        let key = key.clone();
+        let files = files.clone();
+        let remote_dir = remote_dir.clone();
+        let handle = std::thread::spawn(move || {
+            let session =
+                match start_file_transfer(peer.clone(), book, key, true, remote_dir.clone()) {
+                    Ok(session) => session,
+                    Err(err) => {
+                        let mut reports = reports.lock().unwrap();
+                        reports[index].failed = files.len();
+                        reports[index].last_error = Some(format!("{err:#}"));
+                        return;
+                    }
+                };
+            // 等登录完成：列一次目录，拿到结果就说明文件会话已就绪。
+            let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut ready = false;
+            while std::time::Instant::now() < ready_deadline {
+                session.list(&remote_dir);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if session.take_listing().is_some() {
+                    ready = true;
+                    break;
+                }
+            }
+            if !ready {
+                let mut reports = reports.lock().unwrap();
+                reports[index].failed = files.len();
+                reports[index].last_error = Some("文件会话没有就绪".to_owned());
+                return;
+            }
+            for file in &files {
+                let name = std::path::Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let dest = format!("{}\\{}", remote_dir, name);
+                session.upload(file, &dest);
+            }
+            // 等每个 job 的结果：完成/失败都会作为消息进来。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut settled = 0;
+            while settled < files.len() && std::time::Instant::now() < deadline {
+                for message in session.drain_messages() {
+                    if message.contains("文件传输完成") {
+                        settled += 1;
+                        let mut reports = reports.lock().unwrap();
+                        reports[index].done += 1;
+                    } else if message.contains("文件传输失败") {
+                        settled += 1;
+                        let mut reports = reports.lock().unwrap();
+                        reports[index].failed += 1;
+                        reports[index].last_error = Some(message);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if settled < files.len() {
+                let mut reports = reports.lock().unwrap();
+                reports[index].failed += files.len() - settled;
+                reports[index].last_error.get_or_insert_with(|| "等待传输结果超时".to_owned());
+            }
+            session.close();
+        });
+        handles.push(handle);
+    }
+    {
+        let finished = finished.clone();
+        std::thread::spawn(move || {
+            for handle in handles {
+                handle.join().ok();
+            }
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+    Distribution { reports, finished }
 }

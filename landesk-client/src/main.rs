@@ -47,6 +47,15 @@ struct App {
     last_pointer: Option<(i32, i32)>,
     last_modifiers: egui::Modifiers,
     current_display: i32,
+    /// 文件分发的标签页（false = 远端画面）。
+    show_distribute: bool,
+    /// 分发目标（地址簿里的 `地址:端口`）。
+    targets: std::collections::BTreeSet<String>,
+    /// 远端目标目录。
+    distribute_dir: String,
+    /// 要推的文件，一行一个本机路径。
+    distribute_files: String,
+    distribution: Option<librustdesk::landesk::session::Distribution>,
 }
 
 impl App {
@@ -67,6 +76,11 @@ impl App {
             last_pointer: None,
             last_modifiers: egui::Modifiers::NONE,
             current_display: 0,
+            show_distribute: false,
+            targets: Default::default(),
+            distribute_dir: "C:\\landesk-incoming".to_owned(),
+            distribute_files: String::new(),
+            distribution: None,
         };
         app.reload();
         app
@@ -211,6 +225,93 @@ impl App {
                     "收到画面 {}x{}",
                     self.remote_size.0, self.remote_size.1
                 ));
+            }
+        }
+    }
+
+    /// 文件分发：多选目标 + 填文件 + 逐台进度。
+    fn draw_distribute(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.heading("把同一批文件分发给多台机器");
+        ui.label("先在左侧勾选目标（可多选），再填远端目录与要推的文件。");
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("远端目录：");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.distribute_dir)
+                    .desired_width(420.0)
+                    .hint_text("例如 C:\\landesk-incoming"),
+            );
+            ui.label(format!("目标 {} 台", self.targets.len()));
+        });
+        ui.add_space(4.0);
+        ui.label("要推的文件（一行一个本机路径）：");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.distribute_files)
+                .desired_rows(4)
+                .desired_width(f32::INFINITY)
+                .hint_text("C:\\build\\agent.exe\nC:\\build\\config.json"),
+        );
+        ui.add_space(6.0);
+
+        let running = self
+            .distribution
+            .as_ref()
+            .map(|d| !d.finished())
+            .unwrap_or(false);
+        let files: Vec<String> = self
+            .distribute_files
+            .lines()
+            .map(|line| line.trim().to_owned())
+            .filter(|line| !line.is_empty())
+            .collect();
+        let can_start = !running && !self.targets.is_empty() && !files.is_empty();
+        if ui
+            .add_enabled(can_start, egui::Button::new("开始分发"))
+            .clicked()
+        {
+            let peers: Vec<String> = self.targets.iter().cloned().collect();
+            self.log.push(format!(
+                "分发 {} 个文件到 {} 台机器…",
+                files.len(),
+                peers.len()
+            ));
+            self.distribution = Some(librustdesk::landesk::session::distribute(
+                peers,
+                self.book_path.clone(),
+                self.key_path.clone(),
+                files,
+                self.distribute_dir.clone(),
+            ));
+        }
+        if running {
+            ui.label("进行中…");
+        }
+
+        ui.add_space(10.0);
+        ui.separator();
+        match &self.distribution {
+            Some(distribution) => {
+                for report in distribution.snapshot() {
+                    let state = if report.failed > 0 {
+                        format!(
+                            "失败 {} / 共 {}：{}",
+                            report.failed,
+                            report.total,
+                            report.last_error.unwrap_or_default()
+                        )
+                    } else {
+                        format!("{}/{} 完成", report.done, report.total)
+                    };
+                    ui.horizontal(|ui| {
+                        ui.monospace(&report.peer);
+                        ui.label(state);
+                    });
+                }
+            }
+            None => {
+                ui.label("还没有开始过分发。");
             }
         }
     }
@@ -398,6 +499,9 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.heading("lanDesk");
                 ui.separator();
+                ui.selectable_value(&mut self.show_distribute, false, "远端画面");
+                ui.selectable_value(&mut self.show_distribute, true, "文件分发");
+                ui.separator();
                 if ui.button("重新读取地址簿").clicked() {
                     self.reload();
                 }
@@ -453,11 +557,29 @@ impl eframe::App for App {
                                                 } else {
                                                     format!("{}  ({})", entry.name, entry.addr)
                                                 };
-                                                let selected =
-                                                    self.selected.as_deref() == Some(&entry.addr);
-                                                if ui.selectable_label(selected, label).clicked() {
-                                                    self.selected = Some(entry.addr.clone());
-                                                }
+                                                ui.horizontal(|ui| {
+                                                    let mut is_target =
+                                                        self.targets.contains(&entry.addr);
+                                                    if ui
+                                                        .checkbox(&mut is_target, "")
+                                                        .on_hover_text("作为文件分发的目标")
+                                                        .changed()
+                                                    {
+                                                        if is_target {
+                                                            self.targets.insert(entry.addr.clone());
+                                                        } else {
+                                                            self.targets.remove(&entry.addr);
+                                                        }
+                                                    }
+                                                    let selected = self.selected.as_deref()
+                                                        == Some(&entry.addr);
+                                                    if ui
+                                                        .selectable_label(selected, label)
+                                                        .clicked()
+                                                    {
+                                                        self.selected = Some(entry.addr.clone());
+                                                    }
+                                                });
                                             }
                                         });
                                 }
@@ -479,6 +601,10 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.show_distribute {
+                self.draw_distribute(ui);
+                return;
+            }
             if let Some(peer) = self.session_peer.clone() {
                 ui.horizontal(|ui| {
                     ui.label(format!("远端：{peer}"));

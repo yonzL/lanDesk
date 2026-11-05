@@ -231,7 +231,8 @@ pub fn is_server() -> bool {
 pub fn need_fs_cm_send_files() -> bool {
     #[cfg(windows)]
     {
-        is_server()
+        // landesk 的 Service 无界面、也没有连接管理器：文件发送由 Connection 自己完成。
+        is_server() && !crate::landesk::takes_over_network()
     }
     #[cfg(not(windows))]
     {

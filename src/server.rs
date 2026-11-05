@@ -693,16 +693,20 @@ pub async fn start_server(is_server: bool, no_server: bool) {
     if is_server {
         crate::common::set_server_running(true);
         // landesk: 配置了监听端口就接管网络入口（下面直接 await 监听，进程因此存活）。
-        std::thread::spawn(move || {
-            if let Err(err) = crate::ipc::start("") {
-                log::error!("Failed to start ipc: {}", err);
-                if crate::is_server() {
-                    log::error!("ipc is occupied by another process, try kill it");
-                    std::thread::spawn(stop_main_window_process).join().ok();
+        // 同时不过问查询用的 IPC 管道：无界面 Service 没有连接管理器与托盘，也就没人和它讲话；
+        // 这样同一台机器上可以并存多个 Service（测试扇出需要）。
+        if !crate::landesk::takes_over_network() {
+            std::thread::spawn(move || {
+                if let Err(err) = crate::ipc::start("") {
+                    log::error!("Failed to start ipc: {}", err);
+                    if crate::is_server() {
+                        log::error!("ipc is occupied by another process, try kill it");
+                        std::thread::spawn(stop_main_window_process).join().ok();
+                    }
+                    std::process::exit(-1);
                 }
-                std::process::exit(-1);
-            }
-        });
+            });
+        }
         // Warm the DRM availability cache before any client connects, so the first connection does
         // not race a cold `_drm` probe and ship an empty display list ("No displays" + retry).
         // X11 is skipped -- probing there makes the root service open DRM readers for a path this

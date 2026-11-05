@@ -984,7 +984,7 @@ pub async fn start_listen<T: InvokeUiCM>(
 }
 
 #[cfg(not(any(target_os = "ios")))]
-async fn handle_fs(
+pub(crate) async fn handle_fs(
     fs: ipc::FS,
     write_jobs: &mut Vec<fs::TransferJob>,
     read_jobs: &mut Vec<fs::TransferJob>,

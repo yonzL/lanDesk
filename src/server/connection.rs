@@ -432,6 +432,12 @@ pub struct Connection {
     closed: bool,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     start_cm_ipc_para: Option<StartCmIpcPara>,
+    /// landesk（无连接管理器）时，本地文件操作的结果投回这里，由连接循环转给对端。
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    local_reply: mpsc::UnboundedSender<ipc::Data>,
+    /// landesk（无连接管理器）时，文件写的 job 由 Connection 自己持有。
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    local_write_jobs: Arc<tokio::sync::Mutex<Vec<fs::TransferJob>>>,
     auto_disconnect_timer: Option<(Instant, u64)>,
     authed_conn_id: Option<self::raii::AuthedConnID>,
     file_remove_log_control: FileRemoveLogControl,
@@ -640,8 +646,12 @@ impl Connection {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             start_cm_ipc_para: Some(StartCmIpcPara {
                 rx_to_cm,
-                tx_from_cm,
+                tx_from_cm: tx_from_cm.clone(),
             }),
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            local_reply: tx_from_cm,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            local_write_jobs: Default::default(),
             auto_disconnect_timer: None,
             authed_conn_id: None,
             file_remove_log_control: FileRemoveLogControl::new(id),
@@ -2418,6 +2428,27 @@ impl Connection {
 
     #[inline]
     fn send_fs(&mut self, data: ipc::FS) {
+        // landesk 的 Service 无界面、也没有连接管理器：把文件操作交给上游 `handle_fs` 在本进程里做，
+        // 结果投回 `local_reply`，连接循环会当它是 CM 的回包转给对端。
+        if crate::landesk::takes_over_network() {
+            let jobs = self.local_write_jobs.clone();
+            let tx = self.local_reply.clone();
+            let conn_id = self.inner.id();
+            tokio::spawn(async move {
+                let mut write_jobs = jobs.lock().await;
+                let mut read_jobs = Vec::new();
+                crate::ui_cm_interface::handle_fs(
+                    data,
+                    &mut write_jobs,
+                    &mut read_jobs,
+                    &tx,
+                    None,
+                    conn_id,
+                )
+                .await;
+            });
+            return;
+        }
         self.send_to_cm(ipc::Data::FS(data));
     }
 
