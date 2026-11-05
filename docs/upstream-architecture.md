@@ -92,3 +92,18 @@ release 构建写文件日志，路径由 `Config::log_path()` 决定，进程�
 ## 9. 资源对帧率的影响（实测）
 
 `codec_thread_num()` 的上限是 `min(cpu/2, 可用内存/2)`，再按 CPU 占用估算，最后落到 1/2/4/8/16/32/64。1 个 vCPU 的虚拟机上，1080p VP8 软件编码只能到个位数帧率——这时客户端 `Set fps to N`、`Refresh display to reduce delay` 都是症状，不是原因。
+
+## 10. 剪贴板为什么会来回弹（owner marker）
+
+`clipboard.rs:399 get_formats_filter`：读剪贴板时如果发现内容带有 `RUSTDESK_CLIPBOARD_OWNER_FORMAT`，且标记的 owner 正好是**读的这一侧**，就返回空——即"这内容是我自己刚写进去的，不要再发回去"。
+
+- 对端内容写进本机：`side = Client`，读的时候也按 Client 读 → 跳过，不会回声。
+- 本机内容写进对端：`side = Host`，对端读也按 Host 读 → 跳过。
+
+所以自定义发送端只要用 `force = false` 读、按内容去重，就不会形成乒乓。另外 `read_clipboard_message`（`clipboard.rs:95`）产出的是 **`Union::MultiClipboards`**，不是 `Union::Clipboard`——只认后者会静默丢掉每一次读取结果。
+
+## 11. 低算力机器上的画面（实测结论）
+
+- 编码线程数上限是 `min(核数/2, 可用内存/2)`，再按 CPU 占用折算成 1/2/4/8/16/32/64。1 个 vCPU 的 VM 上这个值恒为 1，1080p VP8 软件编码只能到个位数帧率——**这是算力限制，不是配置项能绕过的**。
+- `auto` 编码格式下：可用内存 ≤ 4GB 时优先 VP8（`codec.rs` 的 `auto_codec`），否则 h265 > h264 > AV1 > VP9。
+- 客户端侧的 `Set fps to N`、`Refresh display … to reduce delay` 都是**症状**：它们跟着实测解码帧率调整，看到它们说明上游已经在追赶，要去看服务端的编码耗时与本机负载。
