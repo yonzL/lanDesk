@@ -595,11 +595,55 @@ fn build_session(
 }
 
 fn spawn_session(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::AtomicBool>) {
+    spawn_clipboard_poller(session.clone(), closed.clone());
     std::thread::spawn(move || {
         // 用上游真正的会话入口：它会建好 Data 通道并把 `handler.sender` 接上。
         // （直接用内层 `Remote` 会让 `Session::send` 静默丢弃，输入与文件都发不出去。）
         crate::ui_session_interface::io_loop(session, 0);
         closed.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+/// 轮询本机剪贴板并把变化发给对端。
+///
+/// 上游的 `clipboard_listener` 在非 Flutter UI 里不报变更（实测：线程启动了但一条事件也没有），
+/// 所以这里自己读、自己去重、自己发；`ClipboardSide::Client` 表示“这是控制端本机的内容”。
+fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::AtomicBool>) {
+    use crate::client::Interface;
+    std::thread::spawn(move || {
+        let mut ctx = None;
+        let mut last_sent = String::new();
+        while !closed.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let Some(msg) = crate::clipboard::check_clipboard(
+                &mut ctx,
+                crate::clipboard::ClipboardSide::Client,
+                false,
+            ) else {
+                continue;
+            };
+            // 只关心文本；相同内容不重复发（也避免与对端回声相互触发）。
+            let Some(base::message_proto::message::Union::Clipboard(_)) = msg.union.as_ref() else {
+                continue;
+            };
+            let text = match msg.union.as_ref() {
+                Some(base::message_proto::message::Union::Clipboard(cb)) => {
+                    if cb.compress {
+                        String::from_utf8_lossy(&hbb_common::compress::decompress(&cb.content))
+                            .to_string()
+                    } else {
+                        String::from_utf8_lossy(&cb.content).to_string()
+                    }
+                }
+                _ => continue,
+            };
+            if text.is_empty() || text == last_sent {
+                continue;
+            }
+            last_sent = text;
+            log::debug!("landesk: sending local clipboard ({} chars)", last_sent.chars().count());
+            session.send(crate::client::Data::Message(msg));
+        }
     });
 }
 
