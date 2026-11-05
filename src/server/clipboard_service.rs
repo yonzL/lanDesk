@@ -196,7 +196,11 @@ impl Handler {
 
     fn get_clipboard_msg(&mut self) -> Option<Message> {
         #[cfg(target_os = "windows")]
-        if crate::common::is_server() && crate::platform::is_root() {
+        // landesk 的 Service 没有连接管理器：这个进程就在交互式会话里，直接读自己的剪贴板即可。
+        if crate::common::is_server()
+            && crate::platform::is_root()
+            && !crate::landesk::takes_over_network()
+        {
             match self.read_clipboard_from_cm_ipc() {
                 Err(e) => {
                     log::error!("Failed to read clipboard from cm: {}", e);
