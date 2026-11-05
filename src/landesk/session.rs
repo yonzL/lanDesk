@@ -588,25 +588,20 @@ fn build_session(
     // 编码器默认值必须写进**这个 peer 的 PeerConfig**：登录消息里的 `prefer` 来自
     // `Decoder::preference(id)` → `PeerConfig::load(id)`，而此时 `LoginConfigHandler` 还没
     // initialize（id 为空），在 session 上 `set_option` 落不到对端那份配置里。
-    // 上游 `auto` 会挑 AV1——软编最慢的一个，VM 上直接掉帧。
+    // 上游 `auto` 会挑 AV1——软编最慢的一个，我们的目标机器（VM/老机器）扛不住，
+    // 所以把 `auto` 也当作“未选择”，默认给 vp9；想要别的在界面里显式选。
     {
         use hbb_common::config::PeerConfig;
         let mut config = PeerConfig::load(peer);
         if config
             .options
             .get("codec-preference")
-            .map_or(true, |v| v.is_empty())
+            .map_or(true, |v| v.is_empty() || v == "auto")
         {
             config
                 .options
                 .insert("codec-preference".to_owned(), "vp9".to_owned());
             config.store(peer);
-        }
-    }
-    {
-        let mut lc = session.lc.write().unwrap();
-        if lc.get_option("codec-preference").is_empty() {
-            lc.set_option("codec-preference".to_owned(), "vp9".to_owned());
         }
     }
     session
