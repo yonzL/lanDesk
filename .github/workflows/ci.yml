@@ -24,7 +24,50 @@ jobs:
           workspaces: libs/hbb_common
       - name: cargo check -p hbb_common --all-targets
         run: cargo check -p hbb_common --all-targets
+      - name: cargo test -p hbb_common --lib keyauth
+        run: cargo test -p hbb_common --lib keyauth
 
-# 主 crate（rustdesk 本体）暂不在此验证：它需要 vcpkg 提供的原生依赖与 Flutter
-# 生成的产物，且依赖里有一批 github.com/rustdesk-org 的 git 源。等裁剪到只剩
-# Service 目标时再把它加进来，作为“无出站”不变量的守卫。
+  # 主 crate（Service 与客户端共用的会话内核）。它要 vcpkg 的原生依赖（opus/libvpx/aom/libyuv）
+  # 和 libclang（kcp-sys 用 bindgen），所以单独一个作业，并把 vcpkg 的安装结果缓存起来。
+  main-crate:
+    name: cargo check / main crate
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      VCPKG_BINARY_SOURCES: clear;files,C:\vcpkg-cache,readwrite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: 缓存 vcpkg 已编译的包
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-opus-libvpx-aom-libyuv-v1
+      - name: 准备 vcpkg 与原生依赖
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:VCPKG_ROOT\vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          }
+          & "$env:VCPKG_ROOT\vcpkg.exe" install opus:x64-windows-static libvpx:x64-windows-static aom:x64-windows-static libyuv:x64-windows-static
+      - name: 确认 libclang 可用
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) {
+            winget install --id LLVM.LLVM --accept-source-agreements --accept-package-agreements --disable-interactivity
+          }
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) {
+            throw "libclang.dll not found at $env:LIBCLANG_PATH"
+          }
+      - name: cargo check -p rustdesk --lib
+        run: cargo check -p rustdesk --lib
+      - name: cargo check -p landesk-client
+        run: cargo check -p landesk-client
+
+# 说明：Session/文件分发的端到端测试（tests/session_smoke.rs）不在 CI 里跑——
+# 它要起一个 Service 进程并依赖可截屏的桌面会话，在无人的 runner 上不稳定。
