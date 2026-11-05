@@ -645,8 +645,7 @@ impl eframe::App for App {
                     }
                     // 画质与帧率：真实网络里这决定好不好用。
                     ui.separator();
-                    ui.label("画质：");
-                    for (value, label) in [
+                    ui.label("画质：");                    for (value, label) in [
                         ("low", "低"),
                         ("balanced", "均衡"),
                         ("best", "最佳"),
@@ -673,6 +672,24 @@ impl eframe::App for App {
                                 }
                             }
                         }
+                    }
+                });
+                // 会话开关：声音、剪贴板、剪贴板传文件。
+                ui.horizontal(|ui| {
+                    let Some(session) = self.session.clone() else {
+                        return;
+                    };
+                    let mut audio = session.audio_enabled();
+                    if ui.checkbox(&mut audio, "声音").changed() {
+                        session.set_audio_enabled(audio);
+                    }
+                    let mut clipboard = session.clipboard_enabled();
+                    if ui.checkbox(&mut clipboard, "文本剪贴板").changed() {
+                        session.set_clipboard_enabled(clipboard);
+                    }
+                    let mut file_clipboard = session.file_clipboard_enabled();
+                    if ui.checkbox(&mut file_clipboard, "文件复制粘贴").changed() {
+                        session.set_file_clipboard(file_clipboard);
                     }
                 });
                 ui.separator();
