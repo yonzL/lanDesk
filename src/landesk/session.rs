@@ -475,3 +475,136 @@ fn spawn_session(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::Ato
         closed.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 }
+
+/// 一台目标机器的分发进度。
+#[derive(Debug, Clone)]
+pub struct TargetReport {
+    pub peer: String,
+    pub total: usize,
+    pub done: usize,
+    pub failed: usize,
+    /// 最近一条失败原因（有就说明这台出过问题）。
+    pub last_error: Option<String>,
+}
+
+/// 一次扇出分发：同一批文件同时推给多台 Service。
+pub struct Distribution {
+    reports: Arc<Mutex<Vec<TargetReport>>>,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Distribution {
+    /// 当前的逐台进度快照。
+    pub fn snapshot(&self) -> Vec<TargetReport> {
+        self.reports.lock().unwrap().clone()
+    }
+
+    pub fn finished(&self) -> bool {
+        self.finished.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// 把 `files`（本机路径）逐个推到每台 `peers` 上的 `remote_dir`。
+///
+/// 每台机器一个独立的文件会话，彼此并行；这条调用立即返回，进度从 `Distribution` 里读。
+pub fn distribute(
+    peers: Vec<String>,
+    book: PathBuf,
+    key: PathBuf,
+    files: Vec<String>,
+    remote_dir: String,
+) -> Distribution {
+    let reports = Arc::new(Mutex::new(
+        peers
+            .iter()
+            .map(|peer| TargetReport {
+                peer: peer.clone(),
+                total: files.len(),
+                done: 0,
+                failed: 0,
+                last_error: None,
+            })
+            .collect::<Vec<_>>(),
+    ));
+    let finished = Arc::new(std::sync::atomic::AtomicBool::new(peers.is_empty()));
+    let mut handles = Vec::new();
+    for (index, peer) in peers.into_iter().enumerate() {
+        let reports = reports.clone();
+        let book = book.clone();
+        let key = key.clone();
+        let files = files.clone();
+        let remote_dir = remote_dir.clone();
+        let handle = std::thread::spawn(move || {
+            let session =
+                match start_file_transfer(peer.clone(), book, key, true, remote_dir.clone()) {
+                    Ok(session) => session,
+                    Err(err) => {
+                        let mut reports = reports.lock().unwrap();
+                        reports[index].failed = files.len();
+                        reports[index].last_error = Some(format!("{err:#}"));
+                        return;
+                    }
+                };
+            // 等登录完成：列一次目录，拿到结果就说明文件会话已就绪。
+            let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut ready = false;
+            while std::time::Instant::now() < ready_deadline {
+                session.list(&remote_dir);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if session.take_listing().is_some() {
+                    ready = true;
+                    break;
+                }
+            }
+            if !ready {
+                let mut reports = reports.lock().unwrap();
+                reports[index].failed = files.len();
+                reports[index].last_error = Some("文件会话没有就绪".to_owned());
+                return;
+            }
+            for file in &files {
+                let name = std::path::Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let dest = format!("{}\\{}", remote_dir, name);
+                session.upload(file, &dest);
+            }
+            // 等每个 job 的结果：完成/失败都会作为消息进来。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut settled = 0;
+            while settled < files.len() && std::time::Instant::now() < deadline {
+                for message in session.drain_messages() {
+                    if message.contains("文件传输完成") {
+                        settled += 1;
+                        let mut reports = reports.lock().unwrap();
+                        reports[index].done += 1;
+                    } else if message.contains("文件传输失败") {
+                        settled += 1;
+                        let mut reports = reports.lock().unwrap();
+                        reports[index].failed += 1;
+                        reports[index].last_error = Some(message);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if settled < files.len() {
+                let mut reports = reports.lock().unwrap();
+                reports[index].failed += files.len() - settled;
+                reports[index].last_error.get_or_insert_with(|| "等待传输结果超时".to_owned());
+            }
+            session.close();
+        });
+        handles.push(handle);
+    }
+    {
+        let finished = finished.clone();
+        std::thread::spawn(move || {
+            for handle in handles {
+                handle.join().ok();
+            }
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+    Distribution { reports, finished }
+}

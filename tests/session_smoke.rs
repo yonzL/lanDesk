@@ -352,3 +352,89 @@ fn the_file_session_lists_and_manages_files() {
 
     file.close();
 }
+
+/// 扇出：同一批文件同时推给两台 Service，两台都要落地。
+#[test]
+fn the_same_files_reach_two_services() {
+    let _guard = exclusive();
+    let _ = hbb_common::sodiumoxide::init();
+    init_logging();
+    let dir = temp_dir("fanout");
+    let key_path = dir.join("private.key");
+    let book_path = dir.join("addressbook.json");
+    let keypair = GlobalKeyPair::generate();
+    keypair.save(&key_path).expect("save key");
+    let pub_key = public_key_hex(&keypair.pk);
+
+    // 两台 Service 共用一把公钥，各自一个远端目录。
+    let mut services = Vec::new();
+    let mut peers = Vec::new();
+    let mut remote_dirs = Vec::new();
+    for index in 0..2 {
+        let remote = dir.join(format!("remote-{index}"));
+        std::fs::create_dir_all(&remote).expect("mkdir remote");
+        let port = unique_port();
+        services.push(start_service(port, &pub_key, dir.join(format!("service-{index}.log"))));
+        peers.push(format!("127.0.0.1:{}", port));
+        remote_dirs.push(remote);
+    }
+
+    // 同一批文件（两个）。
+    let mut files = Vec::new();
+    for name in ["one.txt", "two.txt"] {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("content of {name}\n")).expect("write source");
+        files.push(path.to_string_lossy().to_string());
+    }
+
+    // 两台的目标目录不同，所以分两次分发（同一批文件、各自的目标目录）。
+    for (peer, remote) in peers.iter().zip(remote_dirs.iter()) {
+        let distribution = librustdesk::landesk::session::distribute(
+            vec![peer.clone()],
+            book_path.clone(),
+            key_path.clone(),
+            files.clone(),
+            remote.to_string_lossy().to_string(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline && !distribution.finished() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let report = distribution.snapshot().remove(0);
+        assert_eq!(
+            report.failed, 0,
+            "{} 失败：{:?}",
+            report.peer, report.last_error
+        );
+        assert_eq!(report.done, files.len(), "{} 完成数不对", report.peer);
+    }
+
+    // 单次调用推多台（共用同一个目标目录）——这才是扇出的真实形状。
+    let shared = dir.join("shared-incoming");
+    std::fs::create_dir_all(&shared).expect("mkdir shared");
+    let distribution = librustdesk::landesk::session::distribute(
+        peers.clone(),
+        book_path.clone(),
+        key_path.clone(),
+        files.clone(),
+        shared.to_string_lossy().to_string(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline && !distribution.finished() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    for report in distribution.snapshot() {
+        assert_eq!(report.failed, 0, "{} 失败：{:?}", report.peer, report.last_error);
+    }
+
+    for remote in &remote_dirs {
+        for name in ["one.txt", "two.txt"] {
+            let landed = remote.join(name);
+            assert!(landed.exists(), "{} 没落地", landed.display());
+            assert_eq!(
+                std::fs::read(&landed).expect("read"),
+                format!("content of {name}\n").as_bytes()
+            );
+        }
+    }
+}
