@@ -101,6 +101,13 @@ pub fn core_main() -> Option<CoreMainAction> {
     }
     // landesk：把参数落成 landesk.json（服务开机自启时读它）。
     if let Some(config) = crate::landesk::config() {
+        // 命令行扇出：推完就退出。
+        if config.push.is_some() {
+            return match crate::landesk::run_push(config) {
+                Ok(_) => None,
+                Err(err) => Some(CoreMainAction::ExitFailure(err)),
+            };
+        }
         if config.doctor {
             return match crate::landesk::run_doctor() {
                 Ok(()) => None,

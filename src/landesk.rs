@@ -47,6 +47,10 @@ pub struct LandeskConfig {
     pub view: bool,
     /// Service 自检：把配置、端口、主机指纹与需要人工确认的事项列出来。
     pub doctor: bool,
+    /// 命令行扇出：`--landesk-push a,b,c` + `--landesk-to <远端目录>` + `--landesk-files f1,f2`。
+    pub push: Option<Vec<String>>,
+    pub push_to: Option<String>,
+    pub push_files: Option<Vec<String>>,
 }
 
 impl LandeskConfig {
@@ -86,6 +90,9 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut book_verify = None;
     let mut save_config = false;
     let mut doctor = false;
+    let mut push = None;
+    let mut push_to = None;
+    let mut push_files = None;
     let mut view = false;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
@@ -152,6 +159,24 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             }
             "--landesk-save-config" => save_config = true,
             "--landesk-doctor" => doctor = true,
+            "--landesk-push" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-push needs a comma separated list of addr:port");
+                };
+                push = Some(split_list(&value));
+            }
+            "--landesk-to" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-to needs a remote directory");
+                };
+                push_to = Some(value);
+            }
+            "--landesk-files" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-files needs a comma separated list of local paths");
+                };
+                push_files = Some(split_list(&value));
+            }
             "--landesk-view" => view = true,
             _ => rest.push(arg),
         }
@@ -177,6 +202,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || save_config
         || view
         || doctor
+        || push.is_some()
     {
         CONFIG.get_or_init(|| LandeskConfig {
             listen_port,
@@ -192,6 +218,9 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             save_config,
             view,
             doctor,
+            push,
+            push_to,
+            push_files,
         });
     }
     Ok(())
@@ -372,6 +401,68 @@ pub fn run_book_command(config: &LandeskConfig) -> ResultType<()> {
         }
     }
     Ok(())
+}
+
+fn split_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|item| item.trim().to_owned())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// 命令行扇出：把文件推给多台，等全部结束再把结果逐台打出来。
+pub fn run_push(config: &LandeskConfig) -> ResultType<bool> {
+    let (Some(peers), Some(files)) = (config.push.clone(), config.push_files.clone()) else {
+        return Ok(false);
+    };
+    let Some(remote_dir) = config.push_to.clone() else {
+        bail!("--landesk-push 需要同时给 --landesk-to <远端目录>");
+    };
+    if peers.is_empty() || files.is_empty() {
+        bail!("--landesk-push 与 --landesk-files 都不能为空");
+    }
+    println!(
+        "把 {} 个文件推给 {} 台机器的 {}：",
+        files.len(),
+        peers.len(),
+        remote_dir
+    );
+    for file in &files {
+        if !std::path::Path::new(file).exists() {
+            bail!("本机文件不存在：{file}");
+        }
+        println!("  - {file}");
+    }
+    let distribution = crate::landesk::session::distribute(
+        peers,
+        config.book_path(),
+        config.key_path(),
+        files,
+        remote_dir,
+    );
+    while !distribution.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    let mut failed = 0;
+    for report in distribution.snapshot() {
+        if report.failed > 0 {
+            failed += 1;
+            println!(
+                "  [失败] {}：{} / {}，原因：{}",
+                report.peer,
+                report.failed,
+                report.total,
+                report.last_error.unwrap_or_else(|| "未知".to_owned())
+            );
+        } else {
+            println!("  [ ok ] {}：{}/{} 完成", report.peer, report.done, report.total);
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} 台机器分发失败");
+    }
+    Ok(true)
 }
 
 /// 公钥的文本形式与指纹一致：小写十六进制。
