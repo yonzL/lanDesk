@@ -54,6 +54,8 @@
 - [x] **编码线程退化路径**：Windows 读不到 CPU 占用时上游退到单线程，改为按一半核数
 - [x] **帧率问题的真相**：客户端一直是 debug 构建（同机 2560×1600：debug 3.5 fps / release 26.1 fps），fps 控制只是把这个事实放大成“越调越卡”
 - [x] 架构笔记 `docs/upstream-architecture.md`（链路图 + 日志位置 + fps 螺旋 + 编码线程闸）与 `docs/subnetdesk-notes.md`（同类产品取舍对比）
+- [x] **来源网络白名单（默认只收私有网段）**：`src/landesk/net.rs`，accept 后按 CIDR 判断，公网来源在握手前丢弃；`--landesk-allow-network` / `landesk.json` 的 `allowed_networks` 可替换默认值
+- [x] **配置读取顺序 bug**：`public.key` 自动读取排在 `landesk.json` 之前，导致目录里有这个文件时整份配置被跳过（自定义端口静默失效）；已改为先读 JSON、再用 `public.key` 兜底
 
 ## 未完成
 
@@ -73,6 +75,8 @@
   从哪开始：在目标机上 `landesk-server.exe --landesk-save-config …` 后 `--install-service`，重启确认自启、确认服务读的是 exe 同目录的 `landesk.json`。
 
 ### 中优先（补齐能力）
+
+- [ ] 监听改成监督循环：配置变了自动重启监听，并对外暴露 `stopped/starting/listening/failed` 状态（现在改端口必须重启进程）
 
 - [ ] 音频、终端（上游会发，界面回调是空实现）
 - [ ] 输入法/死键/IME 组合输入（现在只有可打印字符 + 控制键）
