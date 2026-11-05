@@ -7,6 +7,7 @@
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod cm;
+pub mod net;
 pub mod session;
 
 use std::net::SocketAddr;
@@ -53,6 +54,8 @@ pub struct LandeskConfig {
     pub push: Option<Vec<String>>,
     pub push_to: Option<String>,
     pub push_files: Option<Vec<String>>,
+    /// 允许连入的来源网段（CIDR）；空表示只用 `net::DEFAULT_NETWORKS` 里的私有网段。
+    pub allowed_networks: Vec<String>,
 }
 
 impl LandeskConfig {
@@ -96,6 +99,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut push_to = None;
     let mut push_files = None;
     let mut view = false;
+    let mut allowed_networks: Vec<String> = Vec::new();
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -167,6 +171,12 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             }
             "--landesk-save-config" => save_config = true,
             "--landesk-doctor" => doctor = true,
+            "--landesk-allow-network" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-allow-network needs a comma separated list of CIDR ranges");
+                };
+                allowed_networks.extend(split_list(&value));
+            }
             "--landesk-push" => {
                 let Some(value) = iter.next() else {
                     bail!("--landesk-push needs a comma separated list of addr:port");
@@ -207,9 +217,12 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     // 命令行没给 landesk 参数时，读可执行文件同目录的 landesk.json。
     // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
     if listen_port.is_none() && auth_pk.is_none() {
-        if let Some((port, pk)) = load_config_file() {
+        if let Some((port, pk, nets)) = load_config_file() {
             listen_port = port;
             auth_pk = pk;
+            if allowed_networks.is_empty() {
+                allowed_networks = nets;
+            }
         }
     }
 
@@ -243,6 +256,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             push,
             push_to,
             push_files,
+            allowed_networks,
         });
     }
     Ok(())
@@ -255,13 +269,15 @@ struct ConfigFile {
     listen_port: Option<u16>,
     #[serde(default)]
     auth_key: Option<String>,
+    #[serde(default)]
+    allowed_networks: Vec<String>,
 }
 
 fn config_file_path() -> PathBuf {
     exe_dir().join("landesk.json")
 }
 
-fn load_config_file() -> Option<(Option<u16>, Option<sign::PublicKey>)> {
+fn load_config_file() -> Option<(Option<u16>, Option<sign::PublicKey>, Vec<String>)> {
     let text = std::fs::read_to_string(config_file_path()).ok()?;
     let file: ConfigFile = serde_json::from_str(&text).ok()?;
     let auth_pk = file
@@ -271,7 +287,7 @@ fn load_config_file() -> Option<(Option<u16>, Option<sign::PublicKey>)> {
     if file.listen_port.is_none() && auth_pk.is_none() {
         None
     } else {
-        Some((file.listen_port, auth_pk))
+        Some((file.listen_port, auth_pk, file.allowed_networks))
     }
 }
 
@@ -342,6 +358,7 @@ pub fn save_config_file(config: &LandeskConfig) -> ResultType<PathBuf> {
     let file = ConfigFile {
         listen_port: config.listen_port,
         auth_key: config.auth_pk.as_ref().map(public_key_hex),
+        allowed_networks: config.allowed_networks.clone(),
     };
     if file.listen_port.is_none() && file.auth_key.is_none() {
         bail!("--landesk-save-config 需要同时给 --landesk-listen 或 --landesk-auth-key");

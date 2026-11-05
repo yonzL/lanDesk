@@ -23,7 +23,7 @@ Master (最小自有窗口 + Rust core)  ──TCP 直连──►  Service (无
 
 landesk 不重写 RustDesk 的会话协议。视频、输入、剪贴板、文件这些消息格式一律沿用，`libs/hbb_common` 的 framed stream 与 protobuf 定义不动。landesk 加的是**握手前置层**：
 
-1. Master 按地址簿里的 `主机:端口` 直连 Service（默认端口 `21118`，安装时可改）。
+1. Master 按地址簿里的 `主机:端口` 直连 Service（默认端口 `21118`，安装时可改）。监听只接受**私有网段来源**（默认 RFC1918 + 100.64/10 + 链路本地 + IPv6 私有段），公网来源在握手前就被丢弃；需要放开时用 `--landesk-allow-network` / `landesk.json` 的 `allowed_networks` 显式配。
 2. Service 下发随机挑战；Master 用**全局私钥**签名并回送，同时声明本次请求的角色（控制 / 观看）。
 3. Service 用安装时绑定的**公钥**验签；失败立即断开。
 4. Service 用**自己的主机密钥**签回 Master 的挑战；Master 拿结果与自己地址簿里记的指纹比对。

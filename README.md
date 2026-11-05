@@ -143,7 +143,14 @@ landesk-server.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-k
 landesk-server.exe --install-service
 ```
 
-服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `landesk-server.exe --server` 也会读它。`landesk.json` 里就是两项：`listen_port` 与 `auth_key`。
+服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `landesk-server.exe --server` 也会读它。`landesk.json` 里就是三项：`listen_port`、`auth_key` 与可选的 `allowed_networks`。
+
+**来源网络白名单（默认只收私有网段）：** 监听端口默认只接受私有地址段的连接（`10/8`、`172.16/12`、`192.168/16`、`100.64/10`、`127/8`、`169.254/16`、`fc00::/7`、`fe80::/10`、`::1/128`），公网来源在握手前就被丢弃并记一行 `rejected connection from disallowed source`。要跨公网用，就显式配一份列表（配了就是**替换**默认值）：
+
+```bash
+landesk-server.exe --landesk-save-config --landesk-listen 21118 \
+  --landesk-auth-key <公钥十六进制> --landesk-allow-network 203.0.113.0/24,198.51.100.7/32
+```
 
 **本机自测（不用两台机器）：**
 

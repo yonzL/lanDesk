@@ -17,6 +17,7 @@ const DIAL_TIMEOUT_MS: u64 = 5_000;
 pub async fn start(port: u16) -> ResultType<()> {
     let listener = tcp::new_listener(("0.0.0.0", port), true).await?;
     log::info!("landesk: service listening on {}", listener.local_addr()?);
+    let allowed = crate::landesk::net::load();
     let server = crate::server::new();
     loop {
         let (stream, addr) = match listener.accept().await {
@@ -26,6 +27,11 @@ pub async fn start(port: u16) -> ResultType<()> {
                 continue;
             }
         };
+        // 默认只收私有网段：产品定位是私有网络里的直连，不把服务挂在公网上。
+        if !crate::landesk::net::allowed(addr.ip(), &allowed) {
+            log::warn!("landesk: rejected connection from disallowed source {addr}");
+            continue;
+        }
         stream.set_nodelay(true).ok();
         let Ok(local) = stream.local_addr() else {
             continue;
