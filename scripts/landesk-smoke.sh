@@ -37,8 +37,11 @@ fail() {
 
 echo "1/6 生成两把密钥对"
 "$BIN" --landesk-genkey "$TMP/master.key" > "$TMP/genkey.txt" 2>&1 || fail genkey
-PUB="$(grep -o 'public key: .*' "$TMP/genkey.txt" | awk '{print $3}')"
-[ -n "$PUB" ] || fail "没有拿到公钥"
+PUB_FILE="$TMP/public.key"
+[ -f "$PUB_FILE" ] || fail "没有生成公钥文件"
+# 用 hex 而不是文件路径：本机 Git-Bash 的 /tmp/... 路径 Windows 进程打不开。
+PUB="$(tr -d '\r\n' < "$PUB_FILE")"
+[ -n "$PUB" ] || fail "公钥文件是空的"
 "$BIN" --landesk-genkey "$TMP/wrong.key" > /dev/null 2>&1 || fail genkey-wrong
 
 echo "2/6 起 Service（端口 $PORT，绑定公钥 ${PUB:0:16}…）"

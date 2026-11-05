@@ -979,14 +979,17 @@ pub fn codec_thread_num(limit: usize) -> usize {
     let memory = s.available_memory() / 1024 / 1024 / 1024;
     #[cfg(windows)]
     {
-        res = 0;
         let percent = base::platform::windows::cpu_uage_one_minute();
         info = format!("cpu usage: {:?}", percent);
-        if let Some(pecent) = percent {
-            if pecent < 100.0 {
-                res = ((100.0 - pecent) * (max as f64) / 200.0).round() as usize;
+        res = match percent {
+            Some(pecent) if pecent < 100.0 => {
+                ((100.0 - pecent) * (max as f64) / 200.0).round() as usize
             }
-        }
+            Some(_) => 0,
+            // 读不到 CPU 占用时（无界面/服务会话常见）按一半核数走，
+            // 否则会退化成单线程编码：1080p 直接掉到个位数帧率。
+            None => max / 2,
+        };
     }
     #[cfg(not(windows))]
     {

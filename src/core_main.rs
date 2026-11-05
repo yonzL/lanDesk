@@ -783,6 +783,11 @@ pub fn core_main() -> Option<CoreMainAction> {
                 }
             }
             return None;
+        } else if args[0] == "--landesk-cm" {
+            // landesk 的连接管理器：无界面，只维护 `_cm` 通道与需要用户身份的操作。
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            crate::landesk::cm::run();
+            return None;
         } else if args[0] == "--cm" {
             // call connection manager to establish connections
             // meanwhile, return true to call flutter window to show control panel

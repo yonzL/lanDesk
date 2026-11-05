@@ -793,7 +793,11 @@ impl Connection {
                             break;
                         }
                         ipc::Data::CmErr(e) => {
-                            if e != "expected" {
+                            // landesk 的连接管理器只提供用户身份能力，不应因为它挂了就丢掉会话：
+                            // 画面与输入跟 CM 无关，降级继续跑。
+                            if crate::landesk::takes_over_network() {
+                                log::warn!("landesk: connection manager unavailable: {}", e);
+                            } else if e != "expected" {
                                 // cm closed before connection
                                 conn.on_close(&format!("connection manager error: {}", e), false).await;
                                 break;
@@ -2902,9 +2906,9 @@ impl Connection {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn try_start_cm_ipc(&mut self) {
-        // landesk: 无界面的 Service 没有连接管理器，也不需要有——会话由远端的 Master 自己显示。
-        // 不跳过的话，服务端会去拉一个 UI 进程、失败后把连接关掉。
-        if crate::landesk::takes_over_network() {
+        // CM 存在的理由只有一个：服务端是 SYSTEM、碰不到用户桌面的那些东西。
+        // 非 root（测试、开发机的普通进程）本来就以用户身份在跑，别去拉一个��生进程。
+        if crate::landesk::takes_over_network() && !crate::platform::is_root() {
             self.start_cm_ipc_para = None;
             return;
         }
@@ -6479,7 +6483,12 @@ async fn start_ipc(
         stream = Some(s);
     }
     if stream.is_none() {
-        let args = vec!["--cm"];
+        // landesk 没有 UI 外壳，用同一套 CM 业务逻辑的无界面入口。
+        let args = if crate::landesk::takes_over_network() {
+            vec!["--landesk-cm"]
+        } else {
+            vec!["--cm"]
+        };
         let run_done;
         if crate::platform::is_root() {
             let mut res = Ok(None);

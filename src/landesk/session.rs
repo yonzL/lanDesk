@@ -52,7 +52,7 @@ pub(crate) fn take_target(peer: &str) -> Option<Target> {
 /// 交给上游 `Session` 的 UI 回调。除画面外一律不做事——landesk 的这一版只要“看到”。
 #[derive(Clone, Default)]
 pub struct LandeskUi {
-    frames: Arc<Mutex<Option<Frame>>>,
+    frames: Arc<Mutex<Option<Arc<Frame>>>>,
     seq: Arc<std::sync::atomic::AtomicU64>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
@@ -175,7 +175,7 @@ impl InvokeUiSession for LandeskUi {
                 rgba.fmt
             );
         }
-        *self.frames.lock().unwrap() = Some(frame);
+        *self.frames.lock().unwrap() = Some(Arc::new(frame));
     }
     fn msgbox(&self, msgtype: &str, _title: &str, text: &str, _link: &str, _retry: bool) {
         log::warn!("landesk: peer message ({msgtype}): {text}");
@@ -209,7 +209,7 @@ impl InvokeUiSession for LandeskUi {
 #[derive(Clone)]
 /// 一次 landesk 会话的把手：界面从这里取最新画面、发输入。
 pub struct SessionHandle {
-    frames: Arc<Mutex<Option<Frame>>>,
+    frames: Arc<Mutex<Option<Arc<Frame>>>>,
     messages: Arc<Mutex<Vec<String>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
@@ -227,7 +227,9 @@ impl SessionHandle {
         let mut messages = self.messages.lock().unwrap();
         std::mem::take(&mut *messages)
     }
-    pub fn latest_frame(&self) -> Option<Frame> {
+
+    /// 最新一帧（共享引用，界面不解一份拷贝；1080p 一份就是 8MB）。
+    pub fn latest_frame(&self) -> Option<Arc<Frame>> {
         self.frames.lock().unwrap().clone()
     }
 
@@ -263,6 +265,18 @@ impl SessionHandle {
         if self.file_clipboard_enabled() != on {
             self.session.toggle_option("enable-file-copy-paste".to_owned());
         }
+    }
+
+    /// 编码器偏好：`auto` / `vp8` / `vp9` / `av1`（上游选项，下一次连接生效）。
+    pub fn codec_preference(&self) -> String {
+        self.session.get_option("codec-preference".to_owned())
+    }
+
+    pub fn set_codec_preference(&self, value: &str) {
+        self.session
+            .set_option("codec-preference".to_owned(), value.to_owned());
+        // 上游在 Flutter 里接着调这个，否则只改了配置、本次会话不变。
+        self.session.update_supported_decodings();
     }
 
     /// 画质：`low` / `balanced` / `best` / `custom`（上游的取值）。
@@ -526,7 +540,7 @@ fn to_rgba(rgba: &scrap::ImageRgb, width: usize, height: usize) -> Option<Vec<u8
 }
 
 struct Shared {
-    frames: Arc<Mutex<Option<Frame>>>,
+    frames: Arc<Mutex<Option<Arc<Frame>>>>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
     listings: Arc<Mutex<Vec<FileListing>>>,
@@ -571,15 +585,81 @@ fn build_session(
         last_progress: Default::default(),
     };
     *session.ui_handler.session.lock().unwrap() = Some(session.clone());
+    // 编码器默认值必须写进**这个 peer 的 PeerConfig**：登录消息里的 `prefer` 来自
+    // `Decoder::preference(id)` → `PeerConfig::load(id)`，而此时 `LoginConfigHandler` 还没
+    // initialize（id 为空），在 session 上 `set_option` 落不到对端那份配置里。
+    // 上游 `auto` 会挑 AV1——软编最慢的一个，我们的目标机器（VM/老机器）扛不住，
+    // 所以把 `auto` 也当作“未选择”，默认给 vp9；想要别的在界面里显式选。
+    {
+        use hbb_common::config::PeerConfig;
+        let mut config = PeerConfig::load(peer);
+        if config
+            .options
+            .get("codec-preference")
+            .map_or(true, |v| v.is_empty() || v == "auto")
+        {
+            config
+                .options
+                .insert("codec-preference".to_owned(), "vp9".to_owned());
+            config.store(peer);
+        }
+    }
     session
 }
 
 fn spawn_session(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::AtomicBool>) {
+    spawn_clipboard_poller(session.clone(), closed.clone());
     std::thread::spawn(move || {
         // 用上游真正的会话入口：它会建好 Data 通道并把 `handler.sender` 接上。
         // （直接用内层 `Remote` 会让 `Session::send` 静默丢弃，输入与文件都发不出去。）
         crate::ui_session_interface::io_loop(session, 0);
         closed.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+/// 轮询本机剪贴板并把变化发给对端。
+///
+/// 上游的 `clipboard_listener` 在非 Flutter UI 里不报变更（实测：线程启动了但一条事件也没有），
+/// 所以这里自己读、自己去重、自己发；`ClipboardSide::Client` 表示“这是控制端本机的内容”。
+fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::AtomicBool>) {
+    use crate::client::Interface;
+    std::thread::spawn(move || {
+        let mut ctx = None;
+        let mut last_sent: Vec<u8> = Vec::new();
+        while !closed.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            // 会话里关了剪贴板就别再往对端发（与上游 `disable-clipboard` 语义一致）。
+            if session.get_toggle_option("disable-clipboard".to_owned()) {
+                continue;
+            }
+            let Some(msg) = crate::clipboard::check_clipboard(
+                &mut ctx,
+                crate::clipboard::ClipboardSide::Client,
+                false,
+            ) else {
+                continue;
+            };
+            // 上游读出来的是一条 `MultiClipboards`，内容相同就不重复发（也避免回声互相触发）。
+            let Some(base::message_proto::message::Union::MultiClipboards(mcb)) =
+                msg.union.as_ref()
+            else {
+                continue;
+            };
+            let mut sig = Vec::new();
+            for cb in &mcb.clipboards {
+                sig.extend_from_slice(&cb.content);
+            }
+            if sig.is_empty() || sig == last_sent {
+                continue;
+            }
+            log::debug!(
+                "landesk: sending local clipboard ({} clipboards, {} bytes)",
+                mcb.clipboards.len(),
+                sig.len()
+            );
+            last_sent = sig;
+            session.send(crate::client::Data::Message(msg));
+        }
     });
 }
 

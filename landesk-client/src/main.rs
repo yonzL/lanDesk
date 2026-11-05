@@ -20,6 +20,8 @@ use librustdesk::landesk::exe_dir;
 use librustdesk::landesk::session::SessionHandle;
 
 fn main() -> eframe::Result<()> {
+    // 库里的日志默认没有安装 logger 会被丢弃；装上后才能看到会话/剪贴板/编码器的实际行为。
+    hbb_common::init_log(false, "client");
     let dir = exe_dir();
     let app = App::new(dir.join("addressbook.json"), dir.join("private.key"));
     let options = eframe::NativeOptions {
@@ -97,6 +99,7 @@ struct App {
     /// 当前画质与帧率（镜像会话里的取值，用于界面高亮）。
     quality: String,
     fps: i32,
+    last_frame_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -123,8 +126,9 @@ impl App {
             distribute_files: String::new(),
             distribution: None,
             editing: None,
-            quality: "balanced".to_owned(),
+            quality: "low".to_owned(),
             fps: 30,
+            last_frame_at: None,
         };
         app.reload();
         app
@@ -270,13 +274,34 @@ impl App {
         if frame.width == 0 || frame.height == 0 || frame.rgba.len() < frame.width * frame.height * 4 {
             return;
         }
+        // 每 30 帧记一次到达间隔：用来分辨“帧率低”与“网络成批到达”。
+        if frame.seq % 30 == 0 {
+            let now = std::time::Instant::now();
+            let dt = self
+                .last_frame_at
+                .map(|last| now.duration_since(last).as_millis())
+                .unwrap_or(0);
+            self.last_frame_at = Some(now);
+            hbb_common::log::info!(
+                "frame {} {}x{} ({} ms since the previous sample)",
+                frame.seq,
+                frame.width,
+                frame.height,
+                dt
+            );
+        }
         self.last_frame_seq = frame.seq;
         self.remote_size = (frame.width, frame.height);
         if !self.file_clipboard_requested {
             // 会话真正立起来之后再把剪贴板传文件打开（开关是对端侧生效的选项）。
             self.file_clipboard_requested = true;
             session.set_file_clipboard(true);
-            self.log.push("File clipboard enabled (copy a file here, paste on the remote)".into());
+            // 默认低画质：VM 里编码是瓶颈时，这个比“等它慢慢编”实际得多；界面里可随时改。
+            session.set_image_quality(&self.quality);
+            self.log.push(format!(
+                "File clipboard enabled; quality {}",
+                self.quality
+            ));
         }
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [frame.width, frame.height],
@@ -421,13 +446,21 @@ impl App {
             modifiers.shift,
             modifiers.command,
         );
-        // 修饰键：Ctrl/Shift/Alt/Meta 的状态变化要真的发过去，否则 Ctrl+C 这类组合在远端无效。
-        for (now, before, key) in [
+        // 修饰键：Ctrl/Shift/Alt 的状态变化要真的发过去，否则 Ctrl+C 这类组合在远端无效。
+        // 注意 `command` 在 Windows 上就是 Ctrl（egui 的约定），把它当 Meta 发出去会让远端
+        // 收到 Windows 键——Ctrl+V 就变成了弹开始菜单。
+        let mut transitions = vec![
             (modifiers.ctrl, self.last_modifiers.ctrl, ControlKey::Control),
             (modifiers.shift, self.last_modifiers.shift, ControlKey::Shift),
             (modifiers.alt, self.last_modifiers.alt, ControlKey::Alt),
-            (modifiers.command, self.last_modifiers.command, ControlKey::Meta),
-        ] {
+        ];
+        #[cfg(target_os = "macos")]
+        transitions.push((
+            modifiers.command,
+            self.last_modifiers.command,
+            ControlKey::Meta,
+        ));
+        for (now, before, key) in transitions {
             if now != before {
                 let mut evt = KeyEvent::new();
                 evt.set_control_key(key);
@@ -485,16 +518,24 @@ impl App {
                 );
             }
         }
+        // 按住 Ctrl/Alt 时 egui 不再产生文本事件（它把这些当快捷键），所以这时要靠
+        // `Event::Key` 把字母/数字本身发过去，否则远端只收到一个孤零零的 Ctrl。
+        let shortcut_mode = ctrl || alt;
         for event in events {
             match event {
                 // 可打印字符走 legacy 模式的 unicode 通道：目标机自己按自己的键盘布局查键码。
                 egui::Event::Text(text) => {
+                    if shortcut_mode {
+                        continue;
+                    }
                     for ch in text.chars() {
                         let mut evt = KeyEvent::new();
                         evt.set_chr(ch as u32);
                         evt.down = true;
                         evt.press = true;
                         evt.mode = KeyboardMode::Legacy.into();
+                        // 远端靠这个字段判断“这是不是组合键”（has_hotkey_modifiers）。
+                        evt.modifiers = held_modifiers(alt, ctrl, shift);
                         session.send_key(&evt);
                     }
                 }
@@ -505,21 +546,122 @@ impl App {
                     modifiers: _,
                     physical_key: _,
                 } => {
-                    let Some(control_key) = control_key_of(key) else {
-                        continue;
-                    };
-                    let mut evt = KeyEvent::new();
-                    evt.set_control_key(control_key);
-                    evt.down = pressed;
-                    evt.press = pressed;
-                    session.send_key(&evt);
+                    if let Some(control_key) = control_key_of(key) {
+                        let mut evt = KeyEvent::new();
+                        evt.set_control_key(control_key);
+                        evt.down = pressed;
+                        evt.press = pressed;
+                        session.send_key(&evt);
+                    } else if shortcut_mode && pressed {
+                        // Ctrl+V / Ctrl+C 这类组合：把字母当按键发，远端的注入才带得上修饰键。
+                        if let Some(ch) = key_char(key) {
+                            let mut evt = KeyEvent::new();
+                            evt.set_chr(ch as u32);
+                            evt.down = true;
+                            evt.press = true;
+                            evt.mode = KeyboardMode::Legacy.into();
+                            evt.modifiers = held_modifiers(alt, ctrl, shift);
+                            session.send_key(&evt);
+                        }
+                    }
                 }
+                // egui-winit 把 Ctrl+C / Ctrl+X / Ctrl+V 吞成 Copy / Cut / Paste，不再发 `Event::Key`。
+                // 这三个要自己组回组合键发给远端，否则 Ctrl+A 能用、复制粘贴没反应。
+                egui::Event::Copy => send_shortcut(&session, 'c', alt, shift),
+                egui::Event::Cut => send_shortcut(&session, 'x', alt, shift),
+                egui::Event::Paste(_) => send_shortcut(&session, 'v', alt, shift),
                 _ => {}
             }
         }
         let _ = key_event::Union::Chr(0); // 保持对生成类型路径的引用，避免 cfg 差异导致未用告警
         let _ = MOUSE_BUTTON_RIGHT;
     }
+}
+
+/// 发一个 Ctrl+<键> 组合（egui 不给我们按键事件时用）。
+fn send_shortcut(session: &SessionHandle, ch: char, alt: bool, shift: bool) {
+    let mut evt = KeyEvent::new();
+    evt.set_chr(ch as u32);
+    evt.down = true;
+    evt.press = true;
+    evt.mode = KeyboardMode::Legacy.into();
+    evt.modifiers = held_modifiers(alt, true, shift);
+    session.send_key(&evt);
+}
+
+/// 当前按着哪些修饰键（远端据此判定组合键）。
+fn held_modifiers(
+    alt: bool,
+    ctrl: bool,
+    shift: bool,
+) -> Vec<hbb_common::protobuf::EnumOrUnknown<ControlKey>> {
+    let mut held = Vec::new();
+    if ctrl {
+        held.push(ControlKey::Control.into());
+    }
+    if shift {
+        held.push(ControlKey::Shift.into());
+    }
+    if alt {
+        held.push(ControlKey::Alt.into());
+    }
+    held
+}
+
+/// 字母/数字/常见标点的字符形式，给“带修饰键的组合”用。
+fn key_char(key: egui::Key) -> Option<char> {
+    use egui::Key;
+    Some(match key {
+        Key::A => 'a',
+        Key::B => 'b',
+        Key::C => 'c',
+        Key::D => 'd',
+        Key::E => 'e',
+        Key::F => 'f',
+        Key::G => 'g',
+        Key::H => 'h',
+        Key::I => 'i',
+        Key::J => 'j',
+        Key::K => 'k',
+        Key::L => 'l',
+        Key::M => 'm',
+        Key::N => 'n',
+        Key::O => 'o',
+        Key::P => 'p',
+        Key::Q => 'q',
+        Key::R => 'r',
+        Key::S => 's',
+        Key::T => 't',
+        Key::U => 'u',
+        Key::V => 'v',
+        Key::W => 'w',
+        Key::X => 'x',
+        Key::Y => 'y',
+        Key::Z => 'z',
+        Key::Num0 => '0',
+        Key::Num1 => '1',
+        Key::Num2 => '2',
+        Key::Num3 => '3',
+        Key::Num4 => '4',
+        Key::Num5 => '5',
+        Key::Num6 => '6',
+        Key::Num7 => '7',
+        Key::Num8 => '8',
+        Key::Num9 => '9',
+        Key::Comma => ',',
+        Key::Period => '.',
+        Key::Semicolon => ';',
+        Key::Slash => '/',
+        Key::Minus => '-',
+        Key::Plus => '+',
+        Key::Equals => '=',
+        Key::Quote => '\'',
+        Key::Backslash => '\\',
+        Key::Backtick => '`',
+        Key::OpenBracket => '[',
+        Key::CloseBracket => ']',
+        _ => return None,
+    })
 }
 
 fn control_key_of(key: egui::Key) -> Option<ControlKey> {
@@ -728,6 +870,23 @@ impl eframe::App for App {
                                     session.set_fps(fps);
                                 }
                             }
+                        }
+                    }
+                    // 编码器：上游的 codec-preference（下一次连接生效）。
+                    ui.separator();
+                    ui.label("Codec:");
+                    for value in ["auto", "vp8", "vp9", "av1"] {
+                        let current = self
+                            .session
+                            .as_ref()
+                            .map(|s| s.codec_preference())
+                            .unwrap_or_default();
+                        if ui.selectable_label(current == value, value).clicked() {
+                            if let Some(session) = &self.session {
+                                session.set_codec_preference(value);
+                            }
+                            self.log
+                                .push(format!("Codec preference set to {value} (takes effect on the next connect)"));
                         }
                     }
                 });

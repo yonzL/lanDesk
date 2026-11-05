@@ -49,7 +49,7 @@ landesk 不重写 RustDesk 的会话协议。视频、输入、剪贴板、文�
 Master 的会话本体全部用上游的 `Remote`/`Session`（登录、视频解码、输入编码、剪贴板、文件、终端都在那里），landesk 只做三处接线：
 
 1. **取连接**：`Client::_start` 里加一条 landesk 分支——目标地址在本地登记过，就用我们已认证的那条流（`transport::connect_authenticated`），不走 rendezvous。
-2. **服务端放行**：landesk 模式下密码不参与（身份已在密钥阶段证明）、没有设备 ID 可校（不做 `lr.username` 比对）、不启动连接管理器（无界面 Service 没有 UI 进程，等它只会把连接拖死）。
+2. **服务端放行**：landesk 模式下密码不参与（身份已在密钥阶段证明）、没有设备 ID 可校（不做 `lr.username` 比对）。连接管理器照旧启动——但跑的是我们自己无界面的那份（见下）。
 3. **画面与输入**：`InvokeUiSession::on_rgba` 把帧交给界面（带递增序号，界面据以免除每帧 8MB 的无谓拷贝）；输入走 `Session::send_mouse`/`send_key_event`。
 
 可验证性不靠手点：`tests/session_smoke.rs` 起一个 Service、用同一份二进制当 Master，断言真的有 RGBA 帧到达，而且指纹被钉住了。
@@ -59,10 +59,15 @@ Master 的会话本体全部用上游的 `Remote`/`Session`（登录、视频解
 - 多显示器已支持切换，但只渲染当前屏；`on_texture`（vram 纹理直通）不走。
 - 键盘：可打印字符 + 常见控制键与 F1–F12；输入法、死键等未覆盖。
 - **剪贴板（含传文件）已接上**：会话里会自动开启上游的 `enable-file-copy-paste`，也就是说在资源管理器里复制文件、到远端粘贴能直接落盘（Windows 双向，对端会回 `has_file_clipboard: true`）。**已进测试**：`tests/session_smoke.rs` 断言对端确实收到并确认了这个选项。文本剪贴板同理，但同机无法区分“真的同步”与“本来就是一个剪贴板”，需两机试用确认。
+- **连接管理器（CM）以无界面形态存在**：上游把“需要用户身份才能做的事”（读本机剪贴板、Windows 文件剪贴板、UAC、聊天/语音转发）交给一个以用户令牌运行、监听 `_cm` 的进程。我们的二进制没有 UI 外壳，`--cm` 起不来，所以新增 `--landesk-cm`：同一个 exe、同一套 `ui_cm_interface` 业务逻辑，配一个不画界面的 `InvokeUiCM` 实现（9 个回调只记日志）。
+  - 服务端在 landesk 模式拉起它（`start_ipc` 的启动参数切换），CM 出错只告警、不断开会话——画面与输入不依赖它，降级仍可用。
+  - 它不参与授权：连接是否允许仍由密钥握手决定，所以远端**不会出现任何“接受连接”弹窗**。
+  - 文本剪贴板两个方向走的路不同：**写**在本机桌面由 `--server` 进程直接做（上游同样如此），**读**必须经 CM（`--server` 是 SYSTEM，自己读拿到的不是用户桌面的剪贴板）。
+  - 控制端的“本机 → 对端”发送由 `src/landesk/session.rs` 的轮询器负责：上游 `clipboard_listener` 在非 Flutter UI 里不报变更（实测线程起来了但零事件），所以自己每 400ms 读一次、按内容去重后发 `MultiClipboards`。去重与回声靠上游的 owner marker（`clipboard.rs:399` 的 `get_formats_filter` 会跳过「自己写的那一侧」）。
 - **文件分发（扇出）已做**：同一批文件可以同时推给多台 Service，每台一个独立的文件会话并行跑，界面逐台给 `完成数/总数` 或失败原因；文件操作（删除、改名/同目录移动、新建目录）与下载也能用。
-  - 关键点：landesk 的 Service 无界面、没有连接管理器，而 Windows 上文件操作本来整套委托给 CM（`ipc::FS::*`）。做法是在 `send_fs` 里把请求交给上游的 `handle_fs`（原本就是 CM 用的自由函数）**在本进程执行**，结果通过 `local_reply` 当作 CM 回包投回连接循环；写 job 由 Connection 自己的 `local_write_jobs` 持有。
+  - 关键点：Windows 上文件操作本来整套委托给 CM（`ipc::FS::*`）。做法是在 `send_fs` 里把请求交给上游的 `handle_fs`（原本就是 CM 用的自由函数）**在本进程执行**，结果通过 `local_reply` 当作 CM 回包投回连接循环；写 job 由 Connection 自己的 `local_write_jobs` 持有。CM 起来之后这条路径**保持不变**：它已验证可用，没必要为了统一而改回委托。
   - 另一条必须遵守的上游约定：上传时 `to` 是**目标目录 + 文件名**、`file_num = 0`（从 Flutter 的 `file_model.dart` 查到）。
-  - landesk 模式不再启动查询用的 IPC 管道（没 CM、没托盘），因此**同机可以并存多个 Service**——扇出测试就是这么跑的。
+  - landesk 模式不启动查询用的 IPC 管道（没托盘），因此**同机可以并存多个 Service**——扇出测试就是这么跑的。但这与 CM 用的 `_cm` 无关：同一个用户会话里 CM 只有一个，多个 Service 会复用它。
   - “启动文件”按决定**砍掉**（需要新协议动作 + 服务端执行开关，安全边界不同）。
 - 音频与终端的 UI 回调是空实现。
 
