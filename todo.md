@@ -2,7 +2,7 @@
 
 本文是**工作追踪**，不是规格。设计上的决定与边界在 `goal-and-requirements.md` 与 `architecture.md`；这里只回答"做完什么了、还剩什么"。
 
-最近更新：试用包 `dist/landesk-20261105.zip` 打完之后。
+最近更新：把无界面连接管理器（CM）、剪贴板双向、编码器默认值修完之后。
 
 ## 已完成
 
@@ -19,7 +19,7 @@
 
 - [x] `keyauth`（在 `libs/hbb_common`）：ed25519 双向证明、TOFU 指纹库、`AuthNonce`/`AuthProof`/`AuthOk` 三条消息、拒绝原因与日志行 — 15 个单测
 - [x] 服务端直连监听（`--landesk-listen`，默认 21118）与强制执行点；未绑定公钥时连 Kx 都不做
-- [x] 服务端在 landesk 模式下的四处放行：密码不参与、不比对设备 ID、不启动连接管理器、跳过上游 rendezvous 并由监听接管进程存活
+- [x] 服务端在 landesk 模式下的放行：密码不参与、不比对设备 ID、跳过上游 rendezvous 并由监听接管进程存活
 - [x] Master 侧拨号（`--landesk-connect` / `--landesk-view`）：密钥交换 → 主机身份 → 回证明 → 等 `AuthOk`
 - [x] 双进程冒烟脚本 `scripts/landesk-smoke.sh`：持钥两连成功、错钥被拒并留一行日志、指纹变更被拒、断言无出站
 
@@ -44,6 +44,16 @@
 
 - [x] `scripts/dist.sh` → `dist/landesk-<日期>.zip`：两个 exe + 一页 `使用说明.txt`，静态 CRT + 静态 vcpkg，不依赖 DLL
 - [x] 干净目录实测发布包：genkey → save-config → 无参 `--server` 读配置监听 → CLI 拨号 → GUI 启动
+
+### 试用期修掉的问题（真机三台机测试驱动）
+
+- [x] **无界面连接管理器**（`--landesk-cm`）：用户令牌进程、只监听 `_cm`、不画窗口、不参与授权。绕过它的代价是文本剪贴板读不到用户桌面——上游靠 CM 干这件事是有理由的
+- [x] **文本剪贴板双向通**（用户实测）：客户端侧自建轮询（上游 `clipboard_listener` 在非 Flutter UI 里不报变更），服务端读回经 CM
+- [x] **Ctrl+C/X/V**：egui-winit 把这三个吐成 `Event::Copy/Cut/Paste`，不再发按键事件；自己组包后可用
+- [x] **编码器默认值真生效**：原来写在 session 未 initialize 的配置上，登录消息里 `prefer` 一直是 Auto（服务端选了最慢的 AV1）；改为直写 `PeerConfig[peer]`，默认 vp9
+- [x] **编码线程退化路径**：Windows 读不到 CPU 占用时上游退到单线程，改为按一半核数
+- [x] **帧率问题的真相**：客户端一直是 debug 构建（同机 2560×1600：debug 3.5 fps / release 26.1 fps），fps 控制只是把这个事实放大成“越调越卡”
+- [x] 架构笔记 `docs/upstream-architecture.md`（链路图 + 日志位置 + fps 螺旋 + 编码线程闸）与 `docs/subnetdesk-notes.md`（同类产品取舍对比）
 
 ## 未完成
 
