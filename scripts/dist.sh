@@ -56,6 +56,15 @@ lanDesk 试用包
   4. 首次连接会把对方主机指纹记下来（未验证）。核对无误后点“核过指纹，标为已验证”。
      之后指纹一变就连不上——那说明机器换了密钥，需要你确认。
 
+三、批量分发（同一批文件推给多台）
+  1. 图形界面：顶部切到“文件分发”，左侧勾选多台，填远端目录与文件，点开始。
+  2. 命令行（适合脚本）：
+         landesk-server.exe --landesk-push 10.0.0.5:21118,10.0.0.6:21118 \
+           --landesk-to "C:\landesk-incoming" \
+           --landesk-files "D:\build\agent.exe,D:\build\config.json" \
+           --landesk-key master.key
+     远端目录要已存在；每台一个独立的文件会话并行推，结果逐台打印。
+
 被拒时看什么
   Service 日志里恰好一行 landesk: reject <原因> from <地址>：
     no-bound-key              被控机没有给 --landesk-auth-key
@@ -63,9 +72,11 @@ lanDesk 试用包
     host-fingerprint-mismatch 对方主机密钥变了
     no-proof-yet              握手没走完（超时或对端不是 landesk）
 
+先自检：landesk-server.exe --landesk-doctor
+
 已知未做
-  文件传输（批量推送/拉取、删除/移动/重命名/启动）尚未实现；
-  剪贴板随会话启用，是否跨机生效需两台机器确认。
+  “启动文件”未做（需要新协议动作）；剪贴板传文件已随会话启用，
+  但跨机是否生效请在两台机器上亲自试一次（本机无法区分）。
 EOF
 
 if command -v zip > /dev/null 2>&1; then
