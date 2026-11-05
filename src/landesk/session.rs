@@ -58,6 +58,8 @@ pub struct LandeskUi {
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
     last_progress: Arc<Mutex<u32>>,
     listings: Arc<Mutex<Vec<FileListing>>>,
+    /// 回指自己所在的会话：上游的若干回调（覆盖确认、删除确认）要求界面主动回应。
+    session: Arc<Mutex<Option<Session<LandeskUi>>>>,
 }
 
 impl LandeskUi {
@@ -116,15 +118,28 @@ impl InvokeUiSession for LandeskUi {
             entries: entries.clone(),
         });
     }
-    fn confirm_delete_files(&self, _id: i32, _i: i32, _name: String) {}
+    fn confirm_delete_files(&self, id: i32, _i: i32, name: String) {
+        use crate::client::file_trait::FileManager;
+        // 无人值守的文件会话：删除前不再弹窗，记一行日志即可。
+        self.note(format!("删除已确认：{name}"));
+        if let Some(session) = self.session.lock().unwrap().as_ref() {
+            session.confirm_delete_files(id, 0);
+        }
+    }
     fn override_file_confirm(
         &self,
-        _id: i32,
-        _file_num: i32,
-        _to: String,
-        _is_upload: bool,
+        id: i32,
+        file_num: i32,
+        to: String,
+        is_upload: bool,
         _is_identical: bool,
     ) {
+        use crate::client::file_trait::FileManager;
+        // 重部署时目标目录里通常已经有同名文件；无人值守的会话直接覆盖（并记住这个选择）。
+        self.note(format!("覆盖已存在的文件：{to}"));
+        if let Some(session) = self.session.lock().unwrap().as_ref() {
+            session.set_confirm_override_file(id, file_num, true, true, is_upload);
+        }
     }
     fn update_block_input_state(&self, _on: bool) {}
     fn job_progress(&self, _id: i32, _file_num: i32, speed: f64, finished_size: f64) {
@@ -499,8 +514,10 @@ fn build_session(
         messages: shared.messages.clone(),
         displays: shared.displays.clone(),
         listings: shared.listings.clone(),
+        session: Default::default(),
         last_progress: Default::default(),
     };
+    *session.ui_handler.session.lock().unwrap() = Some(session.clone());
     session
 }
 
