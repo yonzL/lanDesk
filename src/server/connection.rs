@@ -2906,6 +2906,12 @@ impl Connection {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn try_start_cm_ipc(&mut self) {
+        // CM 存在的理由只有一个：服务端是 SYSTEM、碰不到用户桌面的那些东西。
+        // 非 root（测试、开发机的普通进程）本来就以用户身份在跑，别去拉一个��生进程。
+        if crate::landesk::takes_over_network() && !crate::platform::is_root() {
+            self.start_cm_ipc_para = None;
+            return;
+        }
         if let Some(p) = self.start_cm_ipc_para.take() {
             tokio::spawn(async move {
                 #[cfg(windows)]
