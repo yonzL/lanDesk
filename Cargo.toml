@@ -5,12 +5,16 @@ authors = ["rustdesk <info@rustdesk.com>"]
 edition = "2021"
 build= "build.rs"
 description = "RustDesk Remote Desktop"
-default-run = "rustdesk"
+default-run = "landesk-server"
 rust-version = "1.75"
 
 [lib]
 name = "librustdesk"
 crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "landesk-server"
+path = "src/main.rs"
 
 [[bin]]
 name = "naming"
@@ -214,7 +218,7 @@ jni = "0.21"
 android-wakelock = { git = "https://github.com/rustdesk-org/android-wakelock" }
 
 [workspace]
-members = ["landesk-gui", "libs/scrap", "libs/hbb_common", "libs/base", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer"]
+members = ["landesk-client", "libs/scrap", "libs/hbb_common", "libs/base", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer"]
 exclude = ["vdi/host"]
 
 # Patch libxdo-sys to use a stub implementation that doesn't require libxdo

@@ -4745,7 +4745,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "landesk-gui"
+name = "landesk-client"
 version = "0.1.0"
 dependencies = [
  "base",

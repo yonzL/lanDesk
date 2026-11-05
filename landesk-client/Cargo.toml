@@ -1,11 +1,11 @@
 [package]
-name = "landesk-gui"
+name = "landesk-client"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "landesk-gui"
+name = "landesk-client"
 path = "src/main.rs"
 
 [dependencies]

@@ -43,6 +43,7 @@ struct App {
     texture: Option<egui::TextureHandle>,
     last_frame_seq: u64,
     remote_size: (usize, usize),
+    file_clipboard_requested: bool,
     last_pointer: Option<(i32, i32)>,
     last_modifiers: egui::Modifiers,
     current_display: i32,
@@ -62,6 +63,7 @@ impl App {
             texture: None,
             last_frame_seq: 0,
             remote_size: (0, 0),
+            file_clipboard_requested: false,
             last_pointer: None,
             last_modifiers: egui::Modifiers::NONE,
             current_display: 0,
@@ -175,6 +177,7 @@ impl App {
             self.texture = None;
             self.last_frame_seq = 0;
             self.remote_size = (0, 0);
+            self.file_clipboard_requested = false;
             self.reload();
             return;
         }
@@ -190,14 +193,19 @@ impl App {
         }
         self.last_frame_seq = frame.seq;
         self.remote_size = (frame.width, frame.height);
+        if !self.file_clipboard_requested {
+            // 会话真正立起来之后再把剪贴板传文件打开（开关是对端侧生效的选项）。
+            self.file_clipboard_requested = true;
+            session.set_file_clipboard(true);
+            self.log.push("已开启剪贴板传文件（在资源管理器复制文件，到远端粘贴）".into());
+        }
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [frame.width, frame.height],
             &frame.rgba[..frame.width * frame.height * 4],
         );
         match &mut self.texture {
             Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
-            None => {
-                self.texture =
+            None => {                self.texture =
                     Some(ctx.load_texture("landesk-remote", image, egui::TextureOptions::LINEAR));
                 self.log.push(format!(
                     "收到画面 {}x{}",
