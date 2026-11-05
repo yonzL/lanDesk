@@ -45,6 +45,8 @@ pub struct LandeskConfig {
     pub save_config: bool,
     /// Master 侧：以观察者身份连接（只看画面，不抢操作权）。
     pub view: bool,
+    /// Service 自检：把配置、端口、主机指纹与需要人工确认的事项列出来。
+    pub doctor: bool,
 }
 
 impl LandeskConfig {
@@ -83,6 +85,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut book_list = false;
     let mut book_verify = None;
     let mut save_config = false;
+    let mut doctor = false;
     let mut view = false;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
@@ -148,6 +151,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 book_verify = Some(value);
             }
             "--landesk-save-config" => save_config = true,
+            "--landesk-doctor" => doctor = true,
             "--landesk-view" => view = true,
             _ => rest.push(arg),
         }
@@ -172,6 +176,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || book_verify.is_some()
         || save_config
         || view
+        || doctor
     {
         CONFIG.get_or_init(|| LandeskConfig {
             listen_port,
@@ -186,6 +191,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             book_verify,
             save_config,
             view,
+            doctor,
         });
     }
     Ok(())
@@ -216,6 +222,67 @@ fn load_config_file() -> Option<(Option<u16>, Option<sign::PublicKey>)> {
     } else {
         Some((file.listen_port, auth_pk))
     }
+}
+
+/// Service 自检：把能被机器判定的事实直接给结论，剩下需要人做的事也列出来。
+pub fn run_doctor() -> ResultType<()> {
+    let dir = exe_dir();
+    println!("lanDesk 自检（只读，不改任何东西）");
+    println!("程序目录：{}", dir.display());
+
+    let config_path = config_file_path();
+    let config = config();
+    match (config_path.is_file(), config) {
+        (true, Some(config)) => {
+            let port = config
+                .listen_port
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "（未设置）".to_owned());
+            println!("  [ ok ] landesk.json 存在：{}", config_path.display());
+            println!("  [info] 监听端口：{port}");
+        }
+        (true, None) => println!(
+            "  [warn] {} 存在但读不出来（格式错？）",
+            config_path.display()
+        ),
+        (false, Some(_)) => println!("  [info] 用命令行参数启动，没有 landesk.json（服务自启需要它）"),
+        (false, None) => println!(
+            "  [fail] 既没有命令行参数也没有 landesk.json：这台机器不会监听。\n         \
+             先跑：landesk-server.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-key <公钥>"
+        ),
+    }
+
+    match config.and_then(|config| config.auth_pk.as_ref()) {
+        Some(pk) => println!("  [ ok ] 已绑定公钥：{}", public_key_hex(pk)),
+        None => println!("  [fail] 没有绑定公钥：所有连接都会被拒（no-bound-key）"),
+    }
+
+    match host_keypair() {
+        Some((pk, _)) => {
+            println!("  [info] 本机主机指纹：{}", keyauth::fingerprint(&pk));
+            println!("         对端首次连接会记下它，需要人工核对后标为已验证");
+        }
+        None => println!("  [fail] 读不到主机密钥（上游配置里的 key_pair 无效）"),
+    }
+
+    if let Some(port) = config.and_then(|config| config.listen_port) {
+        let addr = format!("0.0.0.0:{port}");
+        match std::net::TcpListener::bind(&addr) {
+            Ok(_) => println!("  [ ok ] 端口 {port} 现在可以绑定"),
+            Err(err) => println!(
+                "  [warn] 端口 {port} 现在绑不了：{err}（如果 Service 已经在跑，这是正常的）"
+            ),
+        }
+    }
+
+    println!("\n还需要人工确认：");
+    println!("  - 防火墙放行 TCP 端口（管理员）：");
+    println!(
+        "      netsh advfirewall firewall add rule name=\"lanDesk\" dir=in action=allow protocol=TCP localport=21118"
+    );
+    println!("  - 想开机自启：landesk-server.exe --install-service（管理员）");
+    println!("  - 目标机停在登录界面时也能连：Service 需要以服务/SYSTEM 身份运行");
+    Ok(())
 }
 
 /// 把当前配置写到可执行文件同目录，返回文件路径。

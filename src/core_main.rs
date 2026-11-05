@@ -101,11 +101,17 @@ pub fn core_main() -> Option<CoreMainAction> {
     }
     // landesk：把参数落成 landesk.json（服务开机自启时读它）。
     if let Some(config) = crate::landesk::config() {
+        if config.doctor {
+            return match crate::landesk::run_doctor() {
+                Ok(()) => None,
+                Err(err) => Some(CoreMainAction::ExitFailure(err)),
+            };
+        }
         if config.save_config {
             return match crate::landesk::save_config_file(config) {
                 Ok(path) => {
                     println!("已写入 {}", path.display());
-                    println!("下一步：以管理员运行 rustdesk.exe --install-service，服务会读这份配置自启");
+                    println!("下一步：以管理员运行 landesk-server.exe --install-service，服务会读这份配置自启");
                     None
                 }
                 Err(err) => Some(CoreMainAction::ExitFailure(err)),
