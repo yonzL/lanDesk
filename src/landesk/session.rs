@@ -180,6 +180,7 @@ impl InvokeUiSession for LandeskUi {
     fn handle_terminal_response(&self, _response: TerminalResponse) {}
 }
 
+#[derive(Clone)]
 /// 一次 landesk 会话的把手：界面从这里取最新画面、发输入。
 pub struct SessionHandle {
     frames: Arc<Mutex<Option<Frame>>>,
@@ -241,6 +242,28 @@ impl SessionHandle {
     /// 画质：`low` / `balanced` / `best` / `custom`（上游的取值）。
     pub fn set_image_quality(&self, value: &str) {
         self.session.save_image_quality(value.to_owned());
+    }
+
+    /// 声音（对端来的音频）；`get_toggle_option("disable-audio")` 为真表示已关。
+    pub fn audio_enabled(&self) -> bool {
+        !self.session.get_toggle_option("disable-audio".to_owned())
+    }
+
+    pub fn set_audio_enabled(&self, on: bool) {
+        if self.audio_enabled() != on {
+            self.session.toggle_option("disable-audio".to_owned());
+        }
+    }
+
+    /// 文本剪贴板同步。
+    pub fn clipboard_enabled(&self) -> bool {
+        !self.session.get_toggle_option("disable-clipboard".to_owned())
+    }
+
+    pub fn set_clipboard_enabled(&self, on: bool) {
+        if self.clipboard_enabled() != on {
+            self.session.toggle_option("disable-clipboard".to_owned());
+        }
     }
 
     pub fn image_quality(&self) -> String {
