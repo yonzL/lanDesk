@@ -52,7 +52,7 @@ pub(crate) fn take_target(peer: &str) -> Option<Target> {
 /// 交给上游 `Session` 的 UI 回调。除画面外一律不做事——landesk 的这一版只要“看到”。
 #[derive(Clone, Default)]
 pub struct LandeskUi {
-    frames: Arc<Mutex<Option<Frame>>>,
+    frames: Arc<Mutex<Option<Arc<Frame>>>>,
     seq: Arc<std::sync::atomic::AtomicU64>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
@@ -175,7 +175,7 @@ impl InvokeUiSession for LandeskUi {
                 rgba.fmt
             );
         }
-        *self.frames.lock().unwrap() = Some(frame);
+        *self.frames.lock().unwrap() = Some(Arc::new(frame));
     }
     fn msgbox(&self, msgtype: &str, _title: &str, text: &str, _link: &str, _retry: bool) {
         log::warn!("landesk: peer message ({msgtype}): {text}");
@@ -209,7 +209,7 @@ impl InvokeUiSession for LandeskUi {
 #[derive(Clone)]
 /// 一次 landesk 会话的把手：界面从这里取最新画面、发输入。
 pub struct SessionHandle {
-    frames: Arc<Mutex<Option<Frame>>>,
+    frames: Arc<Mutex<Option<Arc<Frame>>>>,
     messages: Arc<Mutex<Vec<String>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
@@ -227,7 +227,9 @@ impl SessionHandle {
         let mut messages = self.messages.lock().unwrap();
         std::mem::take(&mut *messages)
     }
-    pub fn latest_frame(&self) -> Option<Frame> {
+
+    /// 最新一帧（共享引用，界面不解一份拷贝；1080p 一份就是 8MB）。
+    pub fn latest_frame(&self) -> Option<Arc<Frame>> {
         self.frames.lock().unwrap().clone()
     }
 
@@ -536,7 +538,7 @@ fn to_rgba(rgba: &scrap::ImageRgb, width: usize, height: usize) -> Option<Vec<u8
 }
 
 struct Shared {
-    frames: Arc<Mutex<Option<Frame>>>,
+    frames: Arc<Mutex<Option<Arc<Frame>>>>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
     listings: Arc<Mutex<Vec<FileListing>>>,

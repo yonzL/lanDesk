@@ -20,6 +20,8 @@ use librustdesk::landesk::exe_dir;
 use librustdesk::landesk::session::SessionHandle;
 
 fn main() -> eframe::Result<()> {
+    // 库里的日志默认没有安装 logger 会被丢弃；装上后才能看到会话/剪贴板/编码器的实际行为。
+    hbb_common::init_log(false, "client");
     let dir = exe_dir();
     let app = App::new(dir.join("addressbook.json"), dir.join("private.key"));
     let options = eframe::NativeOptions {
@@ -97,6 +99,7 @@ struct App {
     /// 当前画质与帧率（镜像会话里的取值，用于界面高亮）。
     quality: String,
     fps: i32,
+    last_frame_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -125,6 +128,7 @@ impl App {
             editing: None,
             quality: "low".to_owned(),
             fps: 30,
+            last_frame_at: None,
         };
         app.reload();
         app
@@ -269,6 +273,22 @@ impl App {
         };
         if frame.width == 0 || frame.height == 0 || frame.rgba.len() < frame.width * frame.height * 4 {
             return;
+        }
+        // 每 30 帧记一次到达间隔：用来分辨“帧率低”与“网络成批到达”。
+        if frame.seq % 30 == 0 {
+            let now = std::time::Instant::now();
+            let dt = self
+                .last_frame_at
+                .map(|last| now.duration_since(last).as_millis())
+                .unwrap_or(0);
+            self.last_frame_at = Some(now);
+            hbb_common::log::info!(
+                "frame {} {}x{} ({} ms since the previous sample)",
+                frame.seq,
+                frame.width,
+                frame.height,
+                dt
+            );
         }
         self.last_frame_seq = frame.seq;
         self.remote_size = (frame.width, frame.height);
@@ -545,12 +565,28 @@ impl App {
                         }
                     }
                 }
+                // egui-winit 把 Ctrl+C / Ctrl+X / Ctrl+V 吞成 Copy / Cut / Paste，不再发 `Event::Key`。
+                // 这三个要自己组回组合键发给远端，否则 Ctrl+A 能用、复制粘贴没反应。
+                egui::Event::Copy => send_shortcut(&session, 'c', alt, shift),
+                egui::Event::Cut => send_shortcut(&session, 'x', alt, shift),
+                egui::Event::Paste(_) => send_shortcut(&session, 'v', alt, shift),
                 _ => {}
             }
         }
         let _ = key_event::Union::Chr(0); // 保持对生成类型路径的引用，避免 cfg 差异导致未用告警
         let _ = MOUSE_BUTTON_RIGHT;
     }
+}
+
+/// 发一个 Ctrl+<键> 组合（egui 不给我们按键事件时用）。
+fn send_shortcut(session: &SessionHandle, ch: char, alt: bool, shift: bool) {
+    let mut evt = KeyEvent::new();
+    evt.set_chr(ch as u32);
+    evt.down = true;
+    evt.press = true;
+    evt.mode = KeyboardMode::Legacy.into();
+    evt.modifiers = held_modifiers(alt, true, shift);
+    session.send_key(&evt);
 }
 
 /// 当前按着哪些修饰键（远端据此判定组合键）。
