@@ -28,7 +28,43 @@ fn main() -> eframe::Result<()> {
             .with_title("lanDesk"),
         ..Default::default()
     };
-    eframe::run_native("lanDesk", options, Box::new(|_cc| Ok(Box::new(app))))
+    eframe::run_native(
+        "lanDesk",
+        options,
+        Box::new(|cc| {
+            install_cjk_font(&cc.egui_ctx);
+            Ok(Box::new(app))
+        }),
+    )
+}
+
+/// 界面文案是英文，但后端回的消息可能是中文；装一个系统自带的 CJK 字体，避免豆腐块。
+fn install_cjk_font(ctx: &egui::Context) {
+    const CANDIDATES: [&str; 5] = [
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyhl.ttc",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\Deng.ttf",
+    ];
+    for path in CANDIDATES {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("cjk".to_owned(), egui::FontData::from_owned(bytes).into());
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("cjk".to_owned());
+        }
+        ctx.set_fonts(fonts);
+        return;
+    }
 }
 
 struct App {
@@ -126,9 +162,9 @@ impl App {
             return;
         }
         self.log.push(if control {
-            format!("连接 {addr}（申请操作权）…")
+            format!("Connecting to {addr} (take control)…")
         } else {
-            format!("连接 {addr}（只看）…")
+            format!("Connecting to {addr} (view only)…")
         });
         match librustdesk::landesk::session::start(
             addr.clone(),
@@ -141,14 +177,14 @@ impl App {
                 self.session_peer = Some(addr.clone());
                 self.selected = Some(addr);
             }
-            Err(err) => self.log.push(format!("连接失败：{err:#}")),
+            Err(err) => self.log.push(format!("Connect failed: {err:#}")),
         }
     }
 
     fn disconnect(&mut self) {
         if let Some(session) = self.session.take() {
             session.close();
-            self.log.push("已断开".into());
+            self.log.push("Disconnected".into());
         }
         self.session_peer = None;
         self.texture = None;
@@ -161,32 +197,41 @@ impl App {
         if self.book.mark_verified(addr) {
             match self.book.save(&self.book_path) {
                 Ok(()) => self.log.push(format!(
-                    "{addr} 标为已验证（{}）",
+                    "{addr} marked verified ({})",
                     self.book.fingerprint_of(addr).unwrap_or("?")
                 )),
-                Err(err) => self.log.push(format!("保存地址簿失败：{err:#}")),
+                Err(err) => self.log.push(format!("Saving the address book failed: {err:#}")),
             }
             self.reload();
         }
     }
 
     /// 首次使用的两件事：有没有私钥、地址簿里有没有东西。
-    fn draw_first_run_hints(&self, ui: &mut egui::Ui) {
+    fn draw_first_run_hints(&mut self, ui: &mut egui::Ui) {
         if !self.key_path.is_file() {
             ui.colored_label(
                 egui::Color32::YELLOW,
-                format!("还没有私钥：{}", self.key_path.display()),
+                format!("No private key yet: {}", self.key_path.display()),
             );
-            ui.small("在被控机上跑一次 --landesk-genkey master.key，把生成的 private.key 放到这里。");
+            ui.small("Generate a key pair here, then copy public.key to every service machine.");
+            if ui.button("Generate key pair").clicked() {
+                match librustdesk::landesk::generate_key_pair(&self.key_path) {
+                    Ok(public) => self.log.push(format!(
+                        "Generated {} — copy it to the service machine(s)",
+                        public.display()
+                    )),
+                    Err(err) => self.log.push(format!("{err:#}")),
+                }
+            }
             ui.add_space(6.0);
         }
     }
 
     fn pin_state(&self, addr: &str) -> (String, bool) {
         match self.book.pins().get(addr) {
-            None => ("未连接过".to_owned(), false),
-            Some(host) if host.verified => (format!("已验证 {}", host.fingerprint), false),
-            Some(host) => (format!("未验证 {}", host.fingerprint), true),
+            None => ("never connected".to_owned(), false),
+            Some(host) if host.verified => (format!("verified {}", host.fingerprint), false),
+            Some(host) => (format!("unverified {}", host.fingerprint), true),
         }
     }
 
@@ -205,7 +250,7 @@ impl App {
             for message in session.drain_messages() {
                 self.log.push(message);
             }
-            self.log.push("会话已结束".into());
+            self.log.push("Session ended".into());
             self.session = None;
             self.session_peer = None;
             self.texture = None;
@@ -231,7 +276,7 @@ impl App {
             // 会话真正立起来之后再把剪贴板传文件打开（开关是对端侧生效的选项）。
             self.file_clipboard_requested = true;
             session.set_file_clipboard(true);
-            self.log.push("已开启剪贴板传文件（在资源管理器复制文件，到远端粘贴）".into());
+            self.log.push("File clipboard enabled (copy a file here, paste on the remote)".into());
         }
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [frame.width, frame.height],
@@ -242,7 +287,7 @@ impl App {
             None => {                self.texture =
                     Some(ctx.load_texture("landesk-remote", image, egui::TextureOptions::LINEAR));
                 self.log.push(format!(
-                    "收到画面 {}x{}",
+                    "Got a frame {}x{}",
                     self.remote_size.0, self.remote_size.1
                 ));
             }
@@ -252,21 +297,21 @@ impl App {
     /// 文件分发：多选目标 + 填文件 + 逐台进度。
     fn draw_distribute(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        ui.heading("把同一批文件分发给多台机器");
-        ui.label("先在左侧勾选目标（可多选），再填远端目录与要推的文件。");
+        ui.heading("Push the same files to several machines");
+        ui.label("Tick targets on the left, then fill in the remote directory and the files to push.");
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
-            ui.label("远端目录：");
+            ui.label("Remote directory:");
             ui.add(
                 egui::TextEdit::singleline(&mut self.distribute_dir)
                     .desired_width(420.0)
-                    .hint_text("例如 C:\\landesk-incoming"),
+                    .hint_text("e.g. C:\\landesk-incoming"),
             );
-            ui.label(format!("目标 {} 台", self.targets.len()));
+            ui.label(format!("{} target(s)", self.targets.len()));
         });
         ui.add_space(4.0);
-        ui.label("要推的文件（一行一个本机路径）：");
+        ui.label("Files to push (one local path per line):");
         ui.add(
             egui::TextEdit::multiline(&mut self.distribute_files)
                 .desired_rows(4)
@@ -288,12 +333,12 @@ impl App {
             .collect();
         let can_start = !running && !self.targets.is_empty() && !files.is_empty();
         if ui
-            .add_enabled(can_start, egui::Button::new("开始分发"))
+            .add_enabled(can_start, egui::Button::new("Start"))
             .clicked()
         {
             let peers: Vec<String> = self.targets.iter().cloned().collect();
             self.log.push(format!(
-                "分发 {} 个文件到 {} 台机器…",
+                "Pushing {} file(s) to {} machine(s)…",
                 files.len(),
                 peers.len()
             ));
@@ -306,7 +351,7 @@ impl App {
             ));
         }
         if running {
-            ui.label("进行中…");
+            ui.label("running…");
         }
 
         ui.add_space(10.0);
@@ -316,13 +361,13 @@ impl App {
                 for report in distribution.snapshot() {
                     let state = if report.failed > 0 {
                         format!(
-                            "失败 {} / 共 {}：{}",
+                            "failed {} / {}: {}",
                             report.failed,
                             report.total,
                             report.last_error.unwrap_or_default()
                         )
                     } else {
-                        format!("{}/{} 完成", report.done, report.total)
+                        format!("{}/{} done", report.done, report.total)
                     };
                     ui.horizontal(|ui| {
                         ui.monospace(&report.peer);
@@ -331,14 +376,14 @@ impl App {
                 }
             }
             None => {
-                ui.label("还没有开始过分发。");
+                ui.label("Nothing pushed yet.");
             }
         }
     }
 
     fn draw_remote(&mut self, ui: &mut egui::Ui) {
         let Some(texture) = self.texture.clone() else {
-            ui.label("已连上，正在等画面…");
+            ui.label("Connected, waiting for the first frame…");
             return;
         };
         let (rw, rh) = (self.remote_size.0 as f32, self.remote_size.1 as f32);
@@ -357,15 +402,19 @@ impl App {
         let Some(session) = &self.session else {
             return;
         };
-        let (modifiers, scroll, events, pressed, released) = ui.input(|i| {
-            (
-                i.modifiers,
-                i.raw_scroll_delta.y,
-                i.events.clone(),
-                i.pointer.button_pressed(egui::PointerButton::Primary),
-                i.pointer.button_released(egui::PointerButton::Primary),
-            )
-        });
+        let (modifiers, scroll, events, left_pressed, left_released, right_pressed, right_released, pointer) =
+            ui.input(|i| {
+                (
+                    i.modifiers,
+                    i.raw_scroll_delta.y,
+                    i.events.clone(),
+                    i.pointer.button_pressed(egui::PointerButton::Primary),
+                    i.pointer.button_released(egui::PointerButton::Primary),
+                    i.pointer.button_pressed(egui::PointerButton::Secondary),
+                    i.pointer.button_released(egui::PointerButton::Secondary),
+                    i.pointer.latest_pos(),
+                )
+            });
         let (alt, ctrl, shift, command) = (
             modifiers.alt,
             modifiers.ctrl,
@@ -401,29 +450,25 @@ impl App {
                 session.send_mouse(MOUSE_TYPE_MOVE, x, y, alt, ctrl, shift, command);
             }
         }
-        if let Some(pos) = response.interact_pointer_pos() {
+        // 按键位在上游是「按键 << 3 | 类型」，低三位留给类型。
+        let click = |mask: i32, pos: egui::Pos2| {
             let (x, y) = to_remote(pos);
-            if pressed {
-                session.send_mouse(
-                    MOUSE_TYPE_DOWN | MOUSE_BUTTON_LEFT,
-                    x,
-                    y,
-                    alt,
-                    ctrl,
-                    shift,
-                    command,
-                );
-            }
-            if released {
-                session.send_mouse(
-                    MOUSE_TYPE_UP | MOUSE_BUTTON_LEFT,
-                    x,
-                    y,
-                    alt,
-                    ctrl,
-                    shift,
-                    command,
-                );
+            session.send_mouse(mask, x, y, alt, ctrl, shift, command);
+        };
+        if pointer.map(|p| rect.contains(p)).unwrap_or(false) {
+            if let Some(pos) = pointer {
+                if left_pressed {
+                    click((MOUSE_BUTTON_LEFT << 3) | MOUSE_TYPE_DOWN, pos);
+                }
+                if left_released {
+                    click((MOUSE_BUTTON_LEFT << 3) | MOUSE_TYPE_UP, pos);
+                }
+                if right_pressed {
+                    click((MOUSE_BUTTON_RIGHT << 3) | MOUSE_TYPE_DOWN, pos);
+                }
+                if right_released {
+                    click((MOUSE_BUTTON_RIGHT << 3) | MOUSE_TYPE_UP, pos);
+                }
             }
         }
         if let Some(pos) = response.hover_pos() {
@@ -519,23 +564,23 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.heading("lanDesk");
                 ui.separator();
-                ui.selectable_value(&mut self.show_distribute, false, "远端画面");
-                ui.selectable_value(&mut self.show_distribute, true, "文件分发");
+                ui.selectable_value(&mut self.show_distribute, false, "Screen");
+                ui.selectable_value(&mut self.show_distribute, true, "File push");
                 ui.separator();
-                if ui.button("重新读取地址簿").clicked() {
+                if ui.button("Reload address book").clicked() {
                     self.reload();
                 }
                 if let Some(peer) = &self.session_peer {
                     ui.separator();
-                    ui.label(format!("已连接：{peer}"));
-                    if ui.button("断开").clicked() {
+                    ui.label(format!("Connected: {peer}"));
+                    if ui.button("Disconnect").clicked() {
                         self.disconnect();
                     }
                 }
-                ui.label(format!("地址簿：{}", self.book_path.display()));
+                ui.label(format!("Address book: {}", self.book_path.display()));
             });
             if let Some(err) = &self.load_error {
-                ui.colored_label(egui::Color32::RED, format!("地址簿读取失败：{err}"));
+                ui.colored_label(egui::Color32::RED, format!("Reading the address book failed: {err}"));
             }
             ui.add_space(4.0);
         });
@@ -546,8 +591,8 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 if self.book.entries().is_empty() {
-                    ui.label("地址簿是空的。");
-                    ui.label("用命令行导入一份清单：");
+                    ui.label("The address book is empty.");
+                    ui.label("Import a list from the command line:");
                     ui.monospace("rustdesk.exe --landesk-book-import hosts.csv");
                     return;
                 }
@@ -555,7 +600,7 @@ impl eframe::App for App {
                     let tree = self.tree();
                     for (group, subgroups) in tree {
                         let group_name = if group.is_empty() {
-                            "（未分组）".to_owned()
+                            "(no group)".to_owned()
                         } else {
                             group.clone()
                         };
@@ -564,7 +609,7 @@ impl eframe::App for App {
                             .show(ui, |ui| {
                                 for (subgroup, entries) in subgroups {
                                     let subgroup_name = if subgroup.is_empty() {
-                                        "（未分子组）".to_owned()
+                                        "(no subgroup)".to_owned()
                                     } else {
                                         subgroup.clone()
                                     };
@@ -582,7 +627,7 @@ impl eframe::App for App {
                                                         self.targets.contains(&entry.addr);
                                                     if ui
                                                         .checkbox(&mut is_target, "")
-                                                        .on_hover_text("作为文件分发的目标")
+                                                        .on_hover_text("Target for file push")
                                                         .changed()
                                                     {
                                                         if is_target {
@@ -627,9 +672,9 @@ impl eframe::App for App {
             }
             if let Some(peer) = self.session_peer.clone() {
                 ui.horizontal(|ui| {
-                    ui.label(format!("远端：{peer}"));
+                    ui.label(format!("Remote: {peer}"));
                     let (state, _) = self.pin_state(&peer);
-                    ui.label(format!("主机指纹：{state}"));
+                    ui.label(format!("Host fingerprint: {state}"));
                     // 对端有不止一块屏时给个切换；切换后等新屏的第一帧。
                     let displays = self
                         .session
@@ -638,7 +683,7 @@ impl eframe::App for App {
                         .unwrap_or_default();
                     if displays.len() > 1 {
                         ui.separator();
-                        ui.label("屏幕：");
+                        ui.label("Display:");
                         for (index, width, height) in displays {
                             let label = format!("#{} {}x{}", index + 1, width, height);
                             if ui
@@ -657,11 +702,11 @@ impl eframe::App for App {
                     }
                     // 画质与帧率：真实网络里这决定好不好用。
                     ui.separator();
-                    ui.label("画质：");                    for (value, label) in [
-                        ("low", "低"),
-                        ("balanced", "均衡"),
-                        ("best", "最佳"),
-                        ("custom", "自定义"),
+                    ui.label("Quality:");                    for (value, label) in [
+                        ("low", "low"),
+                        ("balanced", "balanced"),
+                        ("best", "best"),
+                        ("custom", "custom"),
                     ] {
                         if ui.selectable_label(self.quality == value, label).clicked() {
                             self.quality = value.to_owned();
@@ -671,7 +716,7 @@ impl eframe::App for App {
                         }
                     }
                     if self.quality == "custom" {
-                        ui.label(" 帧率：");
+                        ui.label(" fps:");
                         for fps in [15, 30, 60] {
                             if ui
                                 .selectable_label(self.fps == fps, fps.to_string())
@@ -692,15 +737,15 @@ impl eframe::App for App {
                         return;
                     };
                     let mut audio = session.audio_enabled();
-                    if ui.checkbox(&mut audio, "声音").changed() {
+                    if ui.checkbox(&mut audio, "Sound").changed() {
                         session.set_audio_enabled(audio);
                     }
                     let mut clipboard = session.clipboard_enabled();
-                    if ui.checkbox(&mut clipboard, "文本剪贴板").changed() {
+                    if ui.checkbox(&mut clipboard, "Text clipboard").changed() {
                         session.set_clipboard_enabled(clipboard);
                     }
                     let mut file_clipboard = session.file_clipboard_enabled();
-                    if ui.checkbox(&mut file_clipboard, "文件复制粘贴").changed() {
+                    if ui.checkbox(&mut file_clipboard, "File clipboard").changed() {
                         session.set_file_clipboard(file_clipboard);
                     }
                 });
@@ -710,7 +755,7 @@ impl eframe::App for App {
             }
 
             let Some(addr) = self.selected.clone() else {
-                ui.label("从左边的地址簿里选一台机器。");
+                ui.label("Pick a machine on the left.");
                 ui.add_space(6.0);
                 self.draw_first_run_hints(ui);
                 return;
@@ -720,24 +765,24 @@ impl eframe::App for App {
             if let Some(mut draft) = self.editing.clone() {
                 ui.add_space(6.0);
                 ui.heading(if draft.addr.is_empty() {
-                    "新增机器".to_owned()
+                    "New machine".to_owned()
                 } else {
-                    format!("编辑 {}", draft.addr)
+                    format!("Edit {}", draft.addr)
                 });
                 egui::Grid::new("entry-form")
                     .num_columns(2)
                     .spacing([10.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("组");
+                        ui.label("Group");
                         ui.text_edit_singleline(&mut draft.group);
                         ui.end_row();
-                        ui.label("子组");
+                        ui.label("Subgroup");
                         ui.text_edit_singleline(&mut draft.subgroup);
                         ui.end_row();
-                        ui.label("显示名");
+                        ui.label("Display name");
                         ui.text_edit_singleline(&mut draft.name);
                         ui.end_row();
-                        ui.label("地址:端口");
+                        ui.label("addr:port");
                         ui.text_edit_singleline(&mut draft.addr);
                         ui.end_row();
                     });
@@ -746,25 +791,25 @@ impl eframe::App for App {
                 let valid = draft.addr.contains(':') && !draft.addr.trim().is_empty();
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(valid, egui::Button::new("保存"))
+                        .add_enabled(valid, egui::Button::new("Save"))
                         .clicked()
                     {
                         self.book.upsert(draft.clone());
                         match self.book.save(&self.book_path) {
                             Ok(()) => {
-                                self.log.push(format!("已保存条目 {}", draft.addr));
+                                self.log.push(format!("Saved entry {}", draft.addr));
                                 self.selected = Some(draft.addr.clone());
                                 self.editing = None;
                                 self.reload();
                             }
-                            Err(err) => self.log.push(format!("保存地址簿失败：{err:#}")),
+                            Err(err) => self.log.push(format!("Saving the address book failed: {err:#}")),
                         }
                     }
-                    if ui.button("取消").clicked() {
+                    if ui.button("Cancel").clicked() {
                         self.editing = None;
                     }
                     if !valid {
-                        ui.small("地址要带端口，例如 10.0.0.5:21118");
+                        ui.small("Address needs a port, e.g. 10.0.0.5:21118");
                     }
                 });
                 return;
@@ -778,57 +823,57 @@ impl eframe::App for App {
             } else {
                 entry.name.clone()
             });
-            ui.label(format!("地址：{}", entry.addr));
+            ui.label(format!("Address: {}", entry.addr));
             let (state, can_verify) = self.pin_state(&addr);
-            ui.label(format!("主机指纹：{state}"));
+            ui.label(format!("Host fingerprint: {state}"));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .button("连接（申请操作权）")
-                    .on_hover_text("验证对面主机、用本机私钥证明自己，然后进入会话")
+                    .button("Connect (take control)")
+                    .on_hover_text("Verify the host, prove with your key, then open the session")
                     .clicked()
                 {
                     self.connect(addr.clone(), true);
                 }
                 if ui
-                    .button("只看")
-                    .on_hover_text("同样验证身份，但声明自己不发送输入")
+                    .button("View only")
+                    .on_hover_text("Same identity check, but declares it sends no input")
                     .clicked()
                 {
                     self.connect(addr.clone(), false);
                 }
-                if can_verify && ui.button("核过指纹，标为已验证").clicked() {
+                if can_verify && ui.button("I checked it, mark verified").clicked() {
                     self.mark_verified(&addr);
                 }
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("编辑").clicked() {
+                if ui.button("Edit").clicked() {
                     self.editing = Some(entry.clone());
                 }
                 if ui
-                    .button("删除")
-                    .on_hover_text("连同它的主机指纹一起丢掉，下次连接重新走首次信任")
+                    .button("Delete")
+                    .on_hover_text("Also drops its fingerprint; the next connect starts trust over")
                     .clicked()
                 {
                     let removed = self.book.remove(&addr);
                     match self.book.save(&self.book_path) {
                         Ok(()) if removed => {
-                            self.log.push(format!("已删除条目 {addr}"));
+                            self.log.push(format!("Deleted entry {addr}"));
                             self.selected = None;
                             self.reload();
                         }
-                        Ok(()) => self.log.push(format!("{addr} 不在地址簿里")),
-                        Err(err) => self.log.push(format!("保存地址簿失败：{err:#}")),
+                        Ok(()) => self.log.push(format!("{addr} is not in the address book")),
+                        Err(err) => self.log.push(format!("Saving the address book failed: {err:#}")),
                     }
                 }
-                if ui.button("新增条目").clicked() {
+                if ui.button("Add entry").clicked() {
                     self.editing = Some(Entry::default());
                 }
             });
             ui.add_space(12.0);
             ui.separator();
-            ui.label(format!("私钥：{}", self.key_path.display()));
-            ui.small("私钥与地址簿都在本程序同目录；换位置用命令行参数 --landesk-key / --landesk-book。");
+            ui.label(format!("Private key: {}", self.key_path.display()));
+            ui.small("Key and address book live beside this exe; use --landesk-key / --landesk-book to move them.");
         });    }
 }

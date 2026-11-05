@@ -154,15 +154,26 @@ impl InvokeUiSession for LandeskUi {
     fn adapt_size(&self) {}
     fn on_rgba(&self, display: usize, rgba: &mut scrap::ImageRgb) {
         let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // 上游解码出来的不是 RGBA：Windows 上是 ARGB（字节序 B,G,R,A），只有 Flutter 构建才是 ABGR。
+        // 这里统一成界面能直接用的 RGBA，并且把 alpha 强制为不透明。
+        let (width, height) = (rgba.w, rgba.h);
+        let Some(pixels) = to_rgba(rgba, width, height) else {
+            return;
+        };
         let frame = Frame {
             seq,
             display,
-            width: rgba.w,
-            height: rgba.h,
-            rgba: rgba.raw.clone(),
+            width,
+            height,
+            rgba: pixels,
         };
         if seq == 1 {
-            log::info!("landesk: first frame {}x{}", frame.width, frame.height);
+            log::info!(
+                "landesk: first frame {}x{} (source format {:?})",
+                frame.width,
+                frame.height,
+                rgba.fmt
+            );
         }
         *self.frames.lock().unwrap() = Some(frame);
     }
@@ -472,6 +483,48 @@ pub fn start_file_transfer(
 }
 
 /// 一次会话里被界面读走的共享数据。
+/// 把解码器给的像素换成界面直接能用的 RGBA（每像素 4 字节、alpha 不透明）。
+///
+/// `ImageFormat::ARGB` 的字节序是 B,G,R,A；`ABGR` 才是 R,G,B,A；`Raw` 是 3 字节且行可能被对齐填充。
+fn to_rgba(rgba: &scrap::ImageRgb, width: usize, height: usize) -> Option<Vec<u8>> {
+    use scrap::ImageFormat;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let bytes_per_row = rgba.raw.len() / height;
+    let (bpp, order) = match rgba.fmt {
+        ImageFormat::Raw => (3usize, None),
+        ImageFormat::ABGR => (4, Some(false)),
+        ImageFormat::ARGB => (4, Some(true)),
+    };
+    if bytes_per_row < width * bpp {
+        return None;
+    }
+    let mut out = Vec::with_capacity(width * height * 4);
+    for row in 0..height {
+        let start = row * bytes_per_row;
+        let line = &rgba.raw[start..start + width * bpp];
+        match bpp {
+            4 => {
+                let swap = order == Some(true);
+                for px in line.chunks_exact(4) {
+                    if swap {
+                        out.extend_from_slice(&[px[2], px[1], px[0], 0xff]);
+                    } else {
+                        out.extend_from_slice(&[px[0], px[1], px[2], 0xff]);
+                    }
+                }
+            }
+            _ => {
+                for px in line.chunks_exact(3) {
+                    out.extend_from_slice(&[px[0], px[1], px[2], 0xff]);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 struct Shared {
     frames: Arc<Mutex<Option<Frame>>>,
     messages: Arc<Mutex<Vec<String>>>,

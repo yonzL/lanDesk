@@ -114,6 +114,12 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 };
                 auth_pk = Some(parse_public_key(&value)?);
             }
+            "--landesk-auth-key-file" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-auth-key-file needs a path to public.key");
+                };
+                auth_pk = Some(read_public_key_file(std::path::Path::new(&value))?);
+            }
             "--landesk-connect" => {
                 let Some(value) = iter.next() else {
                     bail!("--landesk-connect needs an address:port");
@@ -182,6 +188,20 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         }
     }
     *args = rest;
+    // 没有显式给公钥时，默认读程序同目录的 public.key——装 Service 时只要把这个文件拷过去。
+    if auth_pk.is_none() {
+        let candidate = exe_dir().join("public.key");
+        if candidate.is_file() {
+            if let Ok(pk) = read_public_key_file(&candidate) {
+                auth_pk = Some(pk);
+                log::info!(
+                    "landesk: using the public key from {}",
+                    candidate.display()
+                );
+            }
+        }
+    }
+
     // 命令行没给 landesk 参数时，读可执行文件同目录的 landesk.json。
     // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
     if listen_port.is_none() && auth_pk.is_none() {
@@ -504,6 +524,28 @@ pub fn takes_over_network() -> bool {
 /// 公钥的十六进制文本，与 `--landesk-auth-key` 接受的形式一致。
 pub fn public_key_hex(pk: &sign::PublicKey) -> String {
     pk.0.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// 生成一对全局密钥：私钥写到 `private_path`，公钥作为 `public.key` 写在同目录。
+///
+/// 公钥交给 Service（安装时选这个文件），私钥只留在控制端。返回公钥文件路径。
+pub fn generate_key_pair(private_path: &std::path::Path) -> ResultType<std::path::PathBuf> {
+    let keypair = keyauth::GlobalKeyPair::generate();
+    keypair.save(private_path)?;
+    let public_path = private_path.with_file_name("public.key");
+    std::fs::write(
+        &public_path,
+        format!("{}\n", public_key_hex(&keypair.pk)),
+    )
+    .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", public_path.display()))?;
+    Ok(public_path)
+}
+
+/// 读一个公钥文件（小写/大写十六进制都行，允许前后空白）。
+pub fn read_public_key_file(path: &std::path::Path) -> ResultType<sign::PublicKey> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| hbb_common::anyhow::anyhow!("reading {}: {err}", path.display()))?;
+    parse_public_key(text.trim())
 }
 
 /// Service 侧的鉴权执行点：在密钥交换完成后调用，失败即断开。

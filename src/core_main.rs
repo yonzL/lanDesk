@@ -143,14 +143,15 @@ pub fn core_main() -> Option<CoreMainAction> {
     // landesk 的 Master 拨号模式：连一次、做完密钥证明、把指纹变化落盘，然后退出。
     if let Some(path) = crate::landesk::config().and_then(|config| config.genkey.clone()) {
         let keypair = hbb_common::keyauth::GlobalKeyPair::generate();
-        return match keypair.save(&path) {
-            Ok(()) => {
+        return match crate::landesk::generate_key_pair(&path) {
+            Ok(public_path) => {
+                println!("private key: {}", path.display());
+                println!("public key:  {}", public_path.display());
                 println!(
-                    "private key: {}\npublic key: {}",
-                    path.display(),
-                    crate::landesk::public_key_hex(&keypair.pk)
+                    "\n把 {} 拷到被控机，安装时用它：\n  landesk-server.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-key-file {}  ",
+                    public_path.display(),
+                    public_path.display()
                 );
-                log::info!("landesk: wrote a key pair to {}", path.display());
                 None
             }
             Err(err) => Some(CoreMainAction::ExitFailure(err)),
