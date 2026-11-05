@@ -612,7 +612,7 @@ fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::at
     use crate::client::Interface;
     std::thread::spawn(move || {
         let mut ctx = None;
-        let mut last_sent = String::new();
+        let mut last_sent: Vec<u8> = Vec::new();
         while !closed.load(std::sync::atomic::Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(400));
             let Some(msg) = crate::clipboard::check_clipboard(
@@ -622,26 +622,25 @@ fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::at
             ) else {
                 continue;
             };
-            // 只关心文本；相同内容不重复发（也避免与对端回声相互触发）。
-            let Some(base::message_proto::message::Union::Clipboard(_)) = msg.union.as_ref() else {
+            // 上游读出来的是一条 `MultiClipboards`，内容相同就不重复发（也避免回声互相触发）。
+            let Some(base::message_proto::message::Union::MultiClipboards(mcb)) =
+                msg.union.as_ref()
+            else {
                 continue;
             };
-            let text = match msg.union.as_ref() {
-                Some(base::message_proto::message::Union::Clipboard(cb)) => {
-                    if cb.compress {
-                        String::from_utf8_lossy(&hbb_common::compress::decompress(&cb.content))
-                            .to_string()
-                    } else {
-                        String::from_utf8_lossy(&cb.content).to_string()
-                    }
-                }
-                _ => continue,
-            };
-            if text.is_empty() || text == last_sent {
+            let mut sig = Vec::new();
+            for cb in &mcb.clipboards {
+                sig.extend_from_slice(&cb.content);
+            }
+            if sig.is_empty() || sig == last_sent {
                 continue;
             }
-            last_sent = text;
-            log::debug!("landesk: sending local clipboard ({} chars)", last_sent.chars().count());
+            log::debug!(
+                "landesk: sending local clipboard ({} clipboards, {} bytes)",
+                mcb.clipboards.len(),
+                sig.len()
+            );
+            last_sent = sig;
             session.send(crate::client::Data::Message(msg));
         }
     });
