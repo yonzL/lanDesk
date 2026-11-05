@@ -116,6 +116,14 @@ landesk-server.exe --landesk-book-verify 10.0.0.5:21118 # 首次连过、核过�
 
 默认地址簿是 exe 同目录的 `addressbook.json`，私钥是 `private.key`；两者都能用 `--landesk-book` / `--landesk-key` 换位置。
 
+**先自检，再排障：**
+
+```bash
+landesk-server.exe --landesk-doctor
+```
+
+只读，不改任何东西；它会一行行告诉你：配置文件在不在、监听端口、绑没绑公钥、本机主机指纹、端口能不能绑，以及还需要人工做的两件事（防火墙、装成服务）。
+
 **被拒时看什么：** Service 日志里恰好一行，Master 侧同一句话回显。
 
 | 日志里的原因 | 含义 |
