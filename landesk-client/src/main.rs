@@ -139,6 +139,8 @@ struct App {
     quality: String,
     fps: i32,
     last_frame_at: Option<std::time::Instant>,
+    /// 第一次看到对端分辨率时的值（“Original” 按钮用它恢复）。
+    original_resolution: Option<(i32, i32)>,
     /// 主窗口上一次重读地址簿的时间。
     last_book_poll: Option<std::time::Instant>,
 }
@@ -171,6 +173,7 @@ impl App {
             quality: "low".to_owned(),
             fps: 30,
             last_frame_at: None,
+            original_resolution: None,
             last_book_poll: None,
         };
         app.reload();
@@ -379,6 +382,9 @@ impl App {
         }
         self.last_frame_seq = frame.seq;
         self.remote_size = (frame.width, frame.height);
+        // 记住第一次看到的分辨率，“Original” 按钮据此把远端恢复回去。
+        self.original_resolution
+            .get_or_insert((frame.width as i32, frame.height as i32));
         if !self.file_clipboard_requested {
             // 会话真正立起来之后再把剪贴板传文件打开（开关是对端侧生效的选项）。
             self.file_clipboard_requested = true;
@@ -410,8 +416,25 @@ impl App {
     fn draw_distribute(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.heading("Push the same files to several machines");
-        ui.label("Tick targets on the left, then fill in the remote directory and the files to push.");
         ui.add_space(6.0);
+
+        // 目标就在左侧地址簿里勾：这里只把结果回显出来，不再做一套重复的选择界面。
+        if self.targets.is_empty() {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Tick one or more machines in the address book on the left first.",
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("Targets ({})：", self.targets.len()));
+                let targets: Vec<String> = self.targets.iter().cloned().collect();
+                for addr in targets {
+                    if ui.small_button(format!("{addr}  x")).on_hover_text("Remove from this push").clicked() {
+                        self.targets.remove(&addr);
+                    }
+                }
+            });
+        }
 
         ui.horizontal(|ui| {
             ui.label("Remote directory:");
@@ -420,7 +443,6 @@ impl App {
                     .desired_width(420.0)
                     .hint_text("e.g. C:\\landesk-incoming"),
             );
-            ui.label(format!("{} target(s)", self.targets.len()));
         });
         ui.add_space(4.0);
         ui.label("Files to push (one local path per line):");
@@ -443,9 +465,21 @@ impl App {
             .map(|line| line.trim().to_owned())
             .filter(|line| !line.is_empty())
             .collect();
-        let can_start = !running && !self.targets.is_empty() && !files.is_empty();
+        // 先在本机校验路径：猜错了才在这里报，而不是等远端失败。
+        let missing: Vec<&String> = files
+            .iter()
+            .filter(|path| !std::path::Path::new(path.as_str()).is_file())
+            .collect();
+        if !missing.is_empty() {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                format!("Not found on this machine: {}", missing.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ")),
+            );
+        }
+        let can_start = !running && !self.targets.is_empty() && !files.is_empty() && missing.is_empty();
         if ui
             .add_enabled(can_start, egui::Button::new("Start"))
+            .on_disabled_hover_text("Needs at least one target and one existing file")
             .clicked()
         {
             let peers: Vec<String> = self.targets.iter().cloned().collect();
@@ -993,6 +1027,36 @@ impl eframe::App for App {
                     ui.label(format!("Remote: {peer}"));
                     let (state, _) = self.pin_state(&peer);
                     ui.label(format!("Host fingerprint: {state}"));
+                    // 分辨率降档：低配被控机上 1080p 软编只能到 10–20 fps，降分辨率是最有效的手段
+                    // （降画质只降码率、不降像素）。走的是上游的 `Message::Resolution`。
+                    ui.separator();
+                    ui.label("Remote resolution:");
+                    let current = self.current_display;
+                    for (label, target) in [
+                        ("720p", (1280, 720)),
+                        ("1080p", (1920, 1080)),
+                    ] {
+                        if ui.button(label).clicked() {
+                            if let Some(session) = &self.session {
+                                session.change_resolution(current, target.0, target.1);
+                            }
+                            self.log.push(format!(
+                                "Asked the host to switch display {current} to {}x{}",
+                                target.0, target.1
+                            ));
+                        }
+                    }
+                    if let Some(original) = self.original_resolution {
+                        if ui.button("Original").clicked() {
+                            if let Some(session) = &self.session {
+                                session.change_resolution(current, original.0, original.1);
+                            }
+                            self.log.push(format!(
+                                "Asked the host to restore {}x{}",
+                                original.0, original.1
+                            ));
+                        }
+                    }
                     // 对端有不止一块屏时给个切换；切换后等新屏的第一帧。
                     let displays = self
                         .session

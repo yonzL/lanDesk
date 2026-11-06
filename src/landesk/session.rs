@@ -359,6 +359,12 @@ impl SessionHandle {
         self.session.set_custom_fps(fps);
     }
 
+    /// 请求远端切换分辨：降低编码分辨率是低配机器上最有效的提速手段。
+    /// `display` 传当前显示序号，`w`/`h` 传目标分辨率。
+    pub fn change_resolution(&self, display: i32, w: i32, h: i32) {
+        self.session.change_resolution(display, w, h);
+    }
+
     /// 自定义画质的百分比（上游 `custom_image_quality`，10–100）。
     pub fn custom_image_quality(&self) -> i32 {
         self.session
