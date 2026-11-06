@@ -2134,13 +2134,6 @@ pub fn get_proxy_status() -> bool {
     Config::get_socks().is_some()
 }
 #[tokio::main(flavor = "current_thread")]
-pub async fn test_rendezvous_server() -> ResultType<()> {
-    let mut c = connect(1000, "").await?;
-    c.send(&Data::TestRendezvousServer).await?;
-    Ok(())
-}
-
-#[tokio::main(flavor = "current_thread")]
 pub async fn notify_deployed() -> ResultType<()> {
     let mut c = connect(1000, "").await?;
     c.send(&Data::Deployed).await?;

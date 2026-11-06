@@ -66,7 +66,6 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
         crate::platform::android_log::initialize();
         #[cfg(feature = "mediacodec")]
         scrap::mediacodec::check_mediacodec();
-        crate::common::test_rendezvous_server();
         crate::common::test_nat_type();
     }
     #[cfg(target_os = "ios")]
@@ -1078,7 +1077,6 @@ pub fn main_set_option(key: String, value: String) -> hbb_common::anyhow::Result
         set_option(key, value.clone());
         #[cfg(target_os = "android")]
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        crate::common::test_rendezvous_server();
     } else {
         set_option(key, value.clone());
     }

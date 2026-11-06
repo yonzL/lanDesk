@@ -456,6 +456,14 @@ impl Client {
                 false,
             ));
         }
+        // landesk：只连“本进程已经登记过的目标”（会话层在建立时会登记）。
+        // 下面这些分支属于上游的“直连 IP / 域名”与协调器模型，本构建一律不走：
+        // 它们绕过密钥鉴权，也不是这个产品的连接方式。
+        if crate::landesk::is_landesk() {
+            bail!(
+                "landesk: {peer} is not a registered target (this build has no rendezvous or relay path)"
+            );
+        }
         // to-do: remember the port for each peer, so that we can retry easier
         if hbb_common::is_ip_str(peer) {
             return Ok((
@@ -857,9 +865,6 @@ impl Client {
                     break;
                 }
             }
-            crate::refresh_rendezvous_server();
-        } else if !contained {
-            crate::refresh_rendezvous_server();
         }
         log::info!("rendezvous server: {}", rendezvous_server);
         let mut socket = socket?;

@@ -841,50 +841,6 @@ pub async fn get_nat_type(ms_timeout: u64) -> i32 {
     crate::ipc::get_nat_type(ms_timeout).await
 }
 
-// used for client to test which server is faster in case stop-servic=Y
-#[tokio::main(flavor = "current_thread")]
-async fn test_rendezvous_server_() {
-    let servers = Config::get_rendezvous_servers();
-    if servers.len() <= 1 {
-        return;
-    }
-    let mut futs = Vec::new();
-    for host in servers {
-        futs.push(tokio::spawn(async move {
-            let tm = std::time::Instant::now();
-            if socket_client::connect_tcp(
-                crate::check_port(&host, RENDEZVOUS_PORT),
-                CONNECT_TIMEOUT,
-            )
-            .await
-            .is_ok()
-            {
-                let elapsed = tm.elapsed().as_micros();
-                Config::update_latency(&host, elapsed as _);
-            } else {
-                Config::update_latency(&host, -1);
-            }
-        }));
-    }
-    join_all(futs).await;
-    Config::reset_online();
-}
-
-pub fn test_rendezvous_server() {
-    std::thread::spawn(test_rendezvous_server_);
-}
-
-pub fn refresh_rendezvous_server() {
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    test_rendezvous_server();
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    std::thread::spawn(|| {
-        if crate::ipc::test_rendezvous_server().is_err() {
-            test_rendezvous_server();
-        }
-    });
-}
-
 pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::process::Child> {
     #[cfg(target_os = "linux")]
     if let Ok(appdir) = std::env::var("APPDIR") {
