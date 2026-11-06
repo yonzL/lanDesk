@@ -64,7 +64,7 @@ CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 
 
 两个与代码无关、但会让人卡一天的环境事实：
 
-1. **需要 Visual Studio 的 “使用 C++ 的桌面开发” 工作负载。** 只有 `VCToolsMSVC` 目录不够：
+1. **需要 Visual Studio 的 “使用 C++ 的桌面开发” 工作负载 _加上 Windows SDK 本体_。** 只有 `VCToolsMSVC` 目录不够：
    `VCAuxiliaryBuildvcvars64.bat` 与 CMake 都来自这个工作负载。缺了它时 `cc-rs` 的构建脚本会报
    `Failed to find tool. Is cl.exe installed?`，链接期报 `LNK1181: cannot open input file 'kernel32.lib'`，
    而 `flutter build windows` 会报 `Unable to find suitable Visual Studio toolchain`。
