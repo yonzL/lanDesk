@@ -171,11 +171,18 @@ impl AddressBook {
     }
 }
 
+/// 写一个 CSV 字段。
+///
+/// 必须与 `parse_csv_rows` 对称（`to_csv` → `merge_csv` 要能原样读回）：
+/// - 含引号/逗号的加引号（引号内部双写）；
+/// - **以 `#` 开头的也要加引号**，否则重新导入时整行会被当成注释丢掉；
+/// - 换行会撑破“一行一条”的解析器，所以换成空格（条目名里本不该有换行）。
 fn csv_field(value: &str) -> String {
-    if value.contains(['\"', ',']) {
+    let value = value.replace(['\r', '\n'], " ");
+    if value.contains(['\"', ',']) || value.starts_with('#') {
         format!("\"{}\"", value.replace('\"', "\"\""))
     } else {
-        value.to_owned()
+        value
     }
 }
 
@@ -222,7 +229,13 @@ fn parse_csv_entries(text: &str) -> ResultType<Vec<Entry>> {
     if rows.is_empty() {
         bail!("CSV 里没有任何条目");
     }
-    let header: Vec<String> = rows.remove(0).iter().map(|h| h.trim().to_lowercase()).collect();
+    // Excel 的 “CSV UTF-8” 会在文件头写 BOM（U+FEFF），`trim()` 不会去掉它，
+    // 于是第一个表头会变成 `\u{feff}组`，组列静默失配（地址列排第一时则直接报找不到地址列）。
+    let header: Vec<String> = rows
+        .remove(0)
+        .iter()
+        .map(|h| h.trim_start_matches('\u{feff}').trim().to_lowercase())
+        .collect();
     let column = |names: &[&str]| -> Option<usize> {
         header
             .iter()
@@ -465,5 +478,63 @@ mod identity_tests {
         let entry = book.get("10.0.0.5:21118").expect("entry");
         assert_eq!(entry.name, "n2");
         assert_eq!(entry.key.as_deref(), Some("master-a"));
+    }
+}
+
+#[cfg(test)]
+mod csv_robustness_tests {
+    use super::*;
+
+    fn entry(group: &str, name: &str) -> Entry {
+        Entry {
+            group: group.into(),
+            subgroup: "s".into(),
+            name: name.into(),
+            addr: "10.0.0.9:21118".into(),
+            key: None,
+        }
+    }
+
+    #[test]
+    fn a_utf8_bom_on_the_header_does_not_lose_the_group_column() {
+        // Excel “CSV UTF-8” 导出：文件头带 BOM。
+        let csv = "\u{feff}组,子组,显示名,地址\n办公室,开发组,工位-01,10.0.0.9:21118\n";
+        let mut book = AddressBook::default();
+        assert_eq!(book.merge_csv(csv).expect("merge"), 1);
+        let entry = book.get("10.0.0.9:21118").expect("entry");
+        assert_eq!(entry.group, "办公室");
+        assert_eq!(entry.name, "工位-01");
+    }
+
+    #[test]
+    fn a_bom_with_the_address_column_first_still_finds_it() {
+        let csv = "\u{feff}地址,显示名\n10.0.0.9:21118,工位-01\n";
+        let mut book = AddressBook::default();
+        assert_eq!(book.merge_csv(csv).expect("merge"), 1);
+        assert!(book.get("10.0.0.9:21118").is_some());
+    }
+
+    #[test]
+    fn a_group_starting_with_a_hash_survives_a_round_trip() {
+        // `#` 开头的行会被解析器当注释跳过，所以导出时必须给它加引号。
+        let mut book = AddressBook::default();
+        book.upsert(entry("#1车间", "工位-02"));
+        let csv = book.to_csv();
+        let mut restored = AddressBook::default();
+        assert_eq!(restored.merge_csv(&csv).expect("merge"), 1);
+        let entry = restored.get("10.0.0.9:21118").expect("entry");
+        assert_eq!(entry.group, "#1车间");
+    }
+
+    #[test]
+    fn a_newline_in_a_value_stays_readable() {
+        let mut book = AddressBook::default();
+        book.upsert(entry("车\n间", "工\t位"));
+        let csv = book.to_csv();
+        let mut restored = AddressBook::default();
+        assert_eq!(restored.merge_csv(&csv).expect("merge"), 1);
+        let entry = restored.get("10.0.0.9:21118").expect("entry");
+        // 换行被换成空格：宁可丢掉不可表示的分隔符，也要保证导出能被自己读回。
+        assert_eq!(entry.group, "车 间");
     }
 }
