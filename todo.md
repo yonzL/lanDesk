@@ -84,8 +84,7 @@
 
 - [x] **`hbbs_http` 收尾清理**：模块删除（1844 行），通用 HTTP 客户端缩到 114 行（`create_http_client_async` + `get_url_for_tls`，只给 `common::post_request` 用）；Pro 同步、账号 OIDC、录制上传、“Web 控制台踢下线”信号一并消失；flutter-only 的下载器/更新钩子也删了
 - [x] **CI 做主 crate 完整构建 + 打 tag 出包**：`release` 作业在 `v*` tag 上编两个 exe、冒烟后 `dist.sh` 出包并 `gh release create`
-- [ ] **低配被控机画面策略（分辨率降档开关）**
-  现状：远程窗口已有 `720p / 1080p / Original` 三个按钮（走上游 `Message::Resolution`），**待真机验证**降分辨率后帧率是否真的改善
+- 分辨率降档开关：**按决定不做**——它会改变被控机**现场**的显示设置（操作者就在那台机器前），代价不对等。低配机的画质只能靠降码率/换编码器/加资源。
 
 - [x] **Win10 那台恢复后补验**：已通过（文件剪贴板与快捷键在两台 VM 上都验过）
 

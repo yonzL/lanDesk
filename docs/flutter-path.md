@@ -12,7 +12,7 @@
 | 生成的桥文件 | `flutter/lib/generated_bridge.dart`、`src/bridge_generated*.rs` 都是 gitignore 的，CI 里由 codegen 生成 |
 | Flutter SDK | `D:\dev_ai\_tools\flutter.zip`（1.9GB），未解包，`flutter` 不在 PATH |
 | 我们的 FFI 面 | `src/flutter_ffi.rs` 是上游的；**landesk 的能力（按地址开会话、地址簿 CRUD、密钥/身份、文件分发）都不在里面** |
-| 我们现在的 UI | eframe/egui（约 1400 行），已实现 QQ 形态、画质/分辨率/剪贴板/声音开关、文件分发、身份管理 |
+| 我们现在的 UI | eframe/egui（约 1400 行），已实现 QQ 形态、画质/编码器/剪贴板/声音开关、文件分发、身份管理 |
 
 ## 2. 三条必须先解决的事（按依赖顺序）
 

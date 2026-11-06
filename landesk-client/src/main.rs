@@ -139,8 +139,6 @@ struct App {
     quality: String,
     fps: i32,
     last_frame_at: Option<std::time::Instant>,
-    /// 第一次看到对端分辨率时的值（“Original” 按钮用它恢复）。
-    original_resolution: Option<(i32, i32)>,
     /// 主窗口上一次重读地址簿的时间。
     last_book_poll: Option<std::time::Instant>,
 }
@@ -173,7 +171,6 @@ impl App {
             quality: "low".to_owned(),
             fps: 30,
             last_frame_at: None,
-            original_resolution: None,
             last_book_poll: None,
         };
         app.reload();
@@ -382,9 +379,6 @@ impl App {
         }
         self.last_frame_seq = frame.seq;
         self.remote_size = (frame.width, frame.height);
-        // 记住第一次看到的分辨率，“Original” 按钮据此把远端恢复回去。
-        self.original_resolution
-            .get_or_insert((frame.width as i32, frame.height as i32));
         if !self.file_clipboard_requested {
             // 会话真正立起来之后再把剪贴板传文件打开（开关是对端侧生效的选项）。
             self.file_clipboard_requested = true;
@@ -1027,36 +1021,6 @@ impl eframe::App for App {
                     ui.label(format!("Remote: {peer}"));
                     let (state, _) = self.pin_state(&peer);
                     ui.label(format!("Host fingerprint: {state}"));
-                    // 分辨率降档：低配被控机上 1080p 软编只能到 10–20 fps，降分辨率是最有效的手段
-                    // （降画质只降码率、不降像素）。走的是上游的 `Message::Resolution`。
-                    ui.separator();
-                    ui.label("Remote resolution:");
-                    let current = self.current_display;
-                    for (label, target) in [
-                        ("720p", (1280, 720)),
-                        ("1080p", (1920, 1080)),
-                    ] {
-                        if ui.button(label).clicked() {
-                            if let Some(session) = &self.session {
-                                session.change_resolution(current, target.0, target.1);
-                            }
-                            self.log.push(format!(
-                                "Asked the host to switch display {current} to {}x{}",
-                                target.0, target.1
-                            ));
-                        }
-                    }
-                    if let Some(original) = self.original_resolution {
-                        if ui.button("Original").clicked() {
-                            if let Some(session) = &self.session {
-                                session.change_resolution(current, original.0, original.1);
-                            }
-                            self.log.push(format!(
-                                "Asked the host to restore {}x{}",
-                                original.0, original.1
-                            ));
-                        }
-                    }
                     // 对端有不止一块屏时给个切换；切换后等新屏的第一帧。
                     let displays = self
                         .session
