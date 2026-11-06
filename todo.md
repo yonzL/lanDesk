@@ -115,3 +115,9 @@
 - **私钥保护只有文件系统 ACL**（与 Veyon 同路），DPAPI 未实现。
 - **主机指纹首次信任（TOFU）**：首次连接时操作者需自己核对并 `--landesk-book-verify`，否则一直是“未验证”。
 - **测试环境**：两台 Windows VM 的桥接网络偶尔整机掉线（本轮的 Win10 就是），遇到“连不上”先查 ARP 与端口，再怀疑代码。
+
+## 安全事件（必须处理）
+
+- [x] **`master.key` 与 `.av1e/k.key` 曾进公开仓库**（`84f6448` / `5af568c`）→ 已从树中移除并 `*.key` 进 gitignore。
+- [ ] **轮换主控密钥**：旧公钥 `3279bd3c…` 在两台 VM 的 `landesk.json` 里仍被允许。步骤：新密钥对已生成（`run-client/new-master.key` + `public.key`），待把**当前版本**的 `landesk-server.exe` 部署到 VM（旧二进制不认识 `--landesk-allow-client`），再逐台 `--landesk-allow-client <新公钥>` → `--landesk-revoke-client 3279bd3c…`。
+- [ ] `.av1e/k.key` 只是临时目录里的测试密钥，绑定的临时服务已删，无需撤销；但同样视为已泄露。
