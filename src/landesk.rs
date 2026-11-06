@@ -873,14 +873,14 @@ pub fn reload_listen_spec() -> Option<ListenSpec> {
         .as_ref()
         .and_then(|file| file.listen_port)
         .unwrap_or(port);
-    // 命令行给过白名单就永远以它为准：`take_from_args` 已经保证了 CLI 优先，
-    // 这里再挡一下，避免文件在运行期把 CLI 的列表顶掉。
+    // 白名单：命令行给过就永远以命令行为准；否则**以文件为准**（清空/删除列表 = 回到默认私有网段，
+    // 也是一次真实变更）。只有文件不可读/解析失败时才回落启动时的列表。
     let allowed_networks = if cached.allowed_networks_from_cli {
         cached.allowed_networks.clone()
     } else {
         match file {
-            Some(file) if !file.allowed_networks.is_empty() => file.allowed_networks,
-            _ => cached.allowed_networks.clone(),
+            Some(file) => file.allowed_networks,
+            None => cached.allowed_networks.clone(),
         }
     };
     Some(ListenSpec {

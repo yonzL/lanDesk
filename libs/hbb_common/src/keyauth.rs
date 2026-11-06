@@ -8,7 +8,7 @@
 //! * Service → Master：`AuthNonce.host_pk` + `AuthNonce.host_proof`（`sign_host` / `verify_host`），
 //!   用 Service 自己的主机密钥签同一套输入；Master 验完再把公钥交给 `PinnedHosts` 做 TOFU。
 //!
-//! 设计与取舍见 `architecture.md` 与 `.thinkrail/context/TASK-keyauth-handshake.md`。
+//! 设计与取舍见 `architecture.md` 里的“身份”一节。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -60,7 +60,17 @@ impl GlobalKeyPair {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading private key {}", path.display()))?;
         let bytes = from_hex(text.trim()).context("private key file is not valid hex")?;
-        Self::from_secret_bytes(&bytes)
+        let key = Self::from_secret_bytes(&bytes)?;
+        // 升级路径：早先的版本用 `fs::write` 写过 0644 的私钥，读的时候顺手收紧一次，
+        // 而不是指望用户重新生成。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(err) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                log::warn!("cannot tighten permissions of {}: {err}", path.display());
+            }
+        }
+        Ok(key)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -99,7 +109,13 @@ impl GlobalKeyPair {
 /// 每组固定 4 位（`{:04X}`）：拼成 u16 后高位可能是 0，用 `{:02X}` 会输出 2–4 位不等，
 /// 而操作者在 TOFU 时要逐个字符对读这个指纹。
 pub fn fingerprint_bytes(pk: &[u8]) -> String {
-    let digest = Sha256::digest(pk);
+    fingerprint_from_digest(&Sha256::digest(pk))
+}
+
+/// 把摘要格式化成指纹：前 16 字节、每 2 字节一组、每组固定 4 位。
+///
+/// 拆出来是为了能用构造好的摘要做测试——否则只能靠某个摘要字节恰好是 0x00 才能暴露`{:02X}` 吃前导零的问题。
+fn fingerprint_from_digest(digest: &[u8]) -> String {
     let groups: Vec<String> = digest[..16]
         .chunks(2)
         .map(|pair| format!("{:04X}", (u16::from(pair[0]) << 8) | u16::from(pair[1])))
@@ -742,9 +758,19 @@ mod tests {
             assert_eq!(groups.len(), 8, "fingerprint shape: {fp}");
             for group in groups {
                 assert_eq!(group.len(), 4, "group {group} in {fp}");
-                assert!(group.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+                assert!(group
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
             }
         }
+        // 上面那个循环只有在某个摘要字节恰好是 0x00 时才会暴露 `{:02X}` 吃前导零的问题
+        // （每组 1/256，256 组仍有 \u{2248}37% 概率全躲过）。直接喂一个以 0x00 开头的摘要，
+        // 让回归确定性地失败。
+        let digest: Vec<u8> = std::iter::once(0u8).chain(1u8..16).collect();
+        assert_eq!(
+            fingerprint_from_digest(&digest),
+            "0001-0203-0405-0607-0809-0A0B-0C0D-0E0F"
+        );
     }
 
     #[tokio::test]

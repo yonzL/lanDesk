@@ -1635,27 +1635,6 @@ class RustdeskImpl {
     throw UnimplementedError("installInstallPath");
   }
 
-  Future<void> mainAccountAuth(
-      {required String op, required bool rememberMe, dynamic hint}) {
-    // Safari only allows auth popups while handling the original user gesture.
-    // Use Future.sync so the JS call runs synchronously (pre-opening the OIDC
-    // window) while any interop error still surfaces as a Future error.
-    return Future.sync(() => js.context.callMethod('setByName', [
-          'account_auth',
-          jsonEncode({'op': op, 'remember': rememberMe})
-        ]));
-  }
-
-  Future<void> mainAccountAuthCancel({dynamic hint}) {
-    return Future(
-        () => js.context.callMethod('setByName', ['account_auth_cancel']));
-  }
-
-  Future<String> mainAccountAuthResult({dynamic hint}) {
-    return Future(
-        () => js.context.callMethod('getByName', ['account_auth_result']));
-  }
-
   Future<void> mainOnMainWindowClose({dynamic hint}) {
     throw UnimplementedError("mainOnMainWindowClose");
   }

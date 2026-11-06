@@ -166,6 +166,9 @@ impl AddressBook {
 
     /// 按 CSV 文本合并条目：先解析全部行，全部合法才落地（不会导到一半留下半本书）。
     pub fn merge_csv(&mut self, text: &str) -> ResultType<usize> {
+        // BOM 只在文件最前面出现一次：整份文本去一次，比逐个表头单元格去更稳
+        // （首行是空行或注释时逐个去会漏掉，报错还是“找不到地址列”）。
+        let text = text.trim_start_matches('\u{feff}');
         let entries = parse_csv_entries(text)?;
         Ok(self.merge_entries(entries))
     }
@@ -175,11 +178,10 @@ impl AddressBook {
 ///
 /// 必须与 `parse_csv_rows` 对称（`to_csv` → `merge_csv` 要能原样读回）：
 /// - 含引号/逗号的加引号（引号内部双写）；
-/// - **以 `#` 开头的也要加引号**，否则重新导入时整行会被当成注释丢掉；
 /// - 换行会撑破“一行一条”的解析器，所以换成空格（条目名里本不该有换行）。
 fn csv_field(value: &str) -> String {
     let value = value.replace(['\r', '\n'], " ");
-    if value.contains(['\"', ',']) || value.starts_with('#') {
+    if value.contains(['\"', ',']) {
         format!("\"{}\"", value.replace('\"', "\"\""))
     } else {
         value
@@ -187,11 +189,14 @@ fn csv_field(value: &str) -> String {
 }
 
 /// 最小 CSV 解析：支持引号包裹与双引号转义，不支持字段内换行（遇到就报错，而不是猜）。
+///
+/// 不把 `#` 开头的行当注释：Excel/LibreOffice 会去掉它认为多余的引号，把 `"#1车间"` 写回成
+/// `#1车间`，那时把整行当注释丢掉就是静默丢数据。
 fn parse_csv_rows(text: &str) -> ResultType<Vec<Vec<String>>> {
     let mut rows = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let line = line.trim_end_matches('\r');
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+        if line.trim().is_empty() {
             continue;
         }
         let mut fields = Vec::new();

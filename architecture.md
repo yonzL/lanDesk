@@ -142,7 +142,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 - 开关：`--landesk-listen [port]`（缺省 `21118`）与 `--landesk-auth-key <hex>`。两者都不给时是空操作，上游 rendezvous 路径不受影响；给了就进入 landesk 模式。
 - 公钥的文本形式是**小写十六进制**，与指纹表示同一套字符；不用 base64。
-- 握手顺序：先走上游 Kx（Service 用自己的主机密钥签 `KeyExchange`），成功后 Service 在 AEAD 通道上发 `AuthNonce`（携带自己的主机公钥 + 主机签名），Master 验主机证明并按指纹库判定，再回 `AuthProof`；Service 验签通过后回 `AuthOk`，Master 收到回执才算连成。证明不过即在任何会话消息前断开。
+- 握手顺序：先走上游 Kx——它是一次**无签名**的临时 `box_` 交换，只负责建加密通道，**不证明任何一端的身份**（`transport.rs` 里明确没有验 Kx 的签名）。之后 Service 在 AEAD 通道上发 `AuthNonce`（携带自己的主机公钥 + 主机签名），Master 验主机证明并按指纹库判定，再回 `AuthProof`；Service 验签通过后回 `AuthOk`，Master 收到回执才算连成。证明不过即在任何会话消息前断开。
 - 被拒时只留一行：`landesk: reject <no-bound-key|bad-signature|host-fingerprint-mismatch|bad-host-proof|version-mismatch|no-proof-yet> from <地址>`。
 - 未绑定公钥时**连 Kx 都不做**，直接拒。
 - 配置了监听端口时**不启动上游 rendezvous**，并由监听本身维持进程存活（上游原本靠那条永不返回的循环活着）。
@@ -183,3 +183,11 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 - 仅 Windows（Master 与 Service），继承 RustDesk 的 AGPL-3.0。
 - 目标网络前提：两端本来就能互相访问；landesk 不做穿透，也不做发现。
+
+### 编码器默认值（服务端）
+
+上游 `auto` 的顺序是 h265 > h264 > AV1 > VP9，最后一道是“总内存 ≤4GB 改选 VP8”。AV1 软编在 VM/老机器上慢到不可用，所以 landesk 服务端在启动时把 `av1-test` 置为 `N`（`landesk::apply_service_defaults`，只写一次）：
+
+- `auto` 于是落到 **VP9**；总内存 ≤4GB 的机器仍会被上游改选 **VP8**；
+- AV1 只能由客户端在界面里显式选（`codec-preference=av1`）；
+- 客户端**不覆盖**用户的 `codec-preference`——界面的 `auto` 就是上游的 `auto`。

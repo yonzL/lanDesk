@@ -87,13 +87,24 @@ async fn serve(
         let (stream, addr) = match accepted {
             Ok(accepted) => accepted,
             Err(err) => {
-                log::warn!("landesk: accept failed: {err}");
+                // 持续的 accept 失败（句柄耗尽等）会以满速重试：节流 + 退一步，别刷满日志。
+                hbb_common::throttled_log!(
+                    std::time::Duration::from_secs(60),
+                    warn,
+                    "landesk: accept failed: {err}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 continue;
             }
         };
         // 默认只收私有网段：产品定位是私有网络里的直连，不把服务挂在公网上。
         if !crate::landesk::net::allowed(addr.ip(), &allowed) {
-            log::warn!("landesk: rejected connection from disallowed source {addr}");
+            // 来源由对端控制：不节流就是一个局域网主机扫端口就能把日志写满。
+            hbb_common::throttled_log!(
+                std::time::Duration::from_secs(60),
+                warn,
+                "landesk: rejected connection from disallowed source {addr}"
+            );
             continue;
         }
         stream.set_nodelay(true).ok();

@@ -43,7 +43,7 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 - 音频、终端未接；输入法/死键未覆盖。
 - `--install-service` 需要管理员，实际安装尚未验证；无代码签名。
 
-另：公网路径（`rendezvous_mediator`、`hbbs_http`、自动更新等）仍在树里，但 landesk 模式已不再启动它们；彻底删除随对应功能替换逐块进行——删除点集中在会话与鉴权核心（`server/connection.rs`、`ipc.rs`、`flutter_ffi.rs`），先行删除只会得到一个既不能编译也不能运行的树。
+公网路径**已从代码里删除**（见 `architecture.md` 的“移除（已落地）”）：`rendezvous_mediator`、`hbbs_http`、`updater` + `manual_update`、客户端回退拨号、启动时的版本检查。剩下不再被启动的只有 `custom_server.rs`、`auth_2fa.rs`、`trusted_devices` 与若干上游模块，按功能替换逐块清理。
 
 ## 构建
 
@@ -58,7 +58,7 @@ bash scripts/dist.sh                            # 打一个可拷给别人的包
 
 静态 CRT + 静态 vcpkg，所以打包出来就是两个 exe，不依赖 DLL。`landesk-server.exe` 的双击启动会去拉起上游的 sciter 界面，需要 `sciter.dll`——landesk 模式下不要双击它，只用 `--server` / `--landesk-*` 这些参数。
 
-CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 crate 的闸门要等裁剪到仅剩 Service 目标后再加。
+CI（`.github/workflows/ci.yml`）：`hbb-common` 作业跑共享协议库的 check 与 `keyauth` 测试；`main-crate` 作业准备 vcpkg/libclang 后跑 `cargo check -p rustdesk --lib` 与 `cargo check -p landesk-client`；打 `v*` tag 时会额外跑 `release` 作业出包并发布。端到端会话测试不在 CI 里跑（需要一个可截屏的桌面会话）。
 
 ### Windows 构建工具（比网络更容易踩）
 

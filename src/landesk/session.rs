@@ -183,8 +183,9 @@ impl InvokeUiSession for LandeskUi {
         _is_identical: bool,
     ) {
         // 重部署时目标目录里通常已经有同名文件；无人值守的会话直接覆盖（并记住这个选择）。
+        // `set_confirm_override_file` 在 `file_trait.rs` 里**没有** cfg 门控（只有 `confirm_delete_files` 有），
+        // 所以这里也不能门控：否则 `--features flutter` 下覆盖确认发不出去，推送会卡在对端等确认。
         self.note(format!("覆盖已存在的文件：{to}"));
-        #[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
         {
             use crate::client::file_trait::FileManager;
             if let Some(session) = self.session.lock().unwrap().as_ref() {
@@ -715,6 +716,9 @@ fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::at
     use crate::client::Interface;
     std::thread::spawn(move || {
         let mut ctx = None;
+        // 首次读到的是“连之前就在剪贴板里的东西”（可能是密码），只当基线不发送：
+        // 上游同样把首次同步门控在 `sync_init_clipboard` 之后。
+        let mut primed = false;
         let mut last_sent: Vec<u8> = Vec::new();
         while !closed.load(std::sync::atomic::Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(400));
@@ -740,6 +744,12 @@ fn spawn_clipboard_poller(session: Session<LandeskUi>, closed: Arc<std::sync::at
                 sig.extend_from_slice(&cb.content);
             }
             if sig.is_empty() || sig == last_sent {
+                continue;
+            }
+            if !primed {
+                primed = true;
+                last_sent = sig;
+                log::debug!("landesk: clipboard baseline taken, not sent");
                 continue;
             }
             log::debug!(

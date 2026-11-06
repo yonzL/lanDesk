@@ -96,7 +96,6 @@
 
 ### 低优先（工程与发布）
 
-- [ ] GitHub Release 发布 `dist/*.zip`（`dist/` 是 gitignore 的，需要 token）
 - [ ] 代码签名——**按决定不做**（无证书，文档说明 SmartScreen 提示即可）
 - [x] 上游公网模块的物理删除：`rendezvous_mediator`（1844）、`updater` + `manual_update`（846）、客户端回退拨号路径、启动时的 `api.rustdesk.com` 版本检查——共约 2900 行。`hbbs_http` 只剩收尾（见高优先）
 - [ ] 用 Flutter 重做 Master 界面（SDK 已下载在 `D:\dev_ai\_tools\flutter.zip`）——正式版的界面方向；需要先解决 `flutter_rust_bridge` codegen 或手写 Dart 绑定，并把 landesk 能力按 `flutter_ffi` 的形状暴露
