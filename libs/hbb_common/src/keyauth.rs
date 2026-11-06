@@ -1,8 +1,13 @@
 //! 密钥鉴权：Master 用全局私钥证明身份，Service 用绑定的公钥验签；Master 另用「钉住的主机公钥」
 //! 确认对面是地址簿里那台机器。
 //!
-//! 通道本身沿用 [`crate::tcp`] 的密钥交换，这里只补两件事：本模块的 `AuthNonce` / `AuthProof`
-//! 承担 Master → Service 的身份，Service → Master 的身份由密钥交换里已有的主机签名承担。
+//! 两个方向的身份都由本模块自己的握手消息承担，`crate::tcp` 的 Kx 只负责建立加密通道
+//! （它是一次**无签名**的临时密钥交换，本身不证明任何一端的身份）：
+//!
+//! * Master → Service：`AuthProof.signature`，用 Master 的全局私钥签 `AUTH_DOMAIN ‖ transcript ‖ nonce`。
+//! * Service → Master：`AuthNonce.host_pk` + `AuthNonce.host_proof`（`sign_host` / `verify_host`），
+//!   用 Service 自己的主机密钥签同一套输入；Master 验完再把公钥交给 `PinnedHosts` 做 TOFU。
+//!
 //! 设计与取舍见 `architecture.md` 与 `.thinkrail/context/TASK-keyauth-handshake.md`。
 
 use std::collections::BTreeMap;
@@ -62,17 +67,42 @@ impl GlobalKeyPair {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).ok();
         }
-        std::fs::write(path, to_hex(self.secret_bytes()))
-            .with_context(|| format!("writing private key {}", path.display()))
+        // 私钥是全网通行证：非 Windows 上以 0600 创建，别让 umask 变出 0644。
+        // Windows 没有这个模式位，保护靠文件系统 ACL（"只允许当前用户"）。
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .with_context(|| format!("creating private key {}", path.display()))?;
+            file.write_all(to_hex(self.secret_bytes()).as_bytes())
+                .with_context(|| format!("writing private key {}", path.display()))?;
+            // 已存在的文件不会被 `mode` 改权限，所以再收紧一次。
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, to_hex(self.secret_bytes()))
+                .with_context(|| format!("writing private key {}", path.display()))?;
+        }
+        Ok(())
     }
 }
 
-/// 主机公钥的指纹：SHA-256 的前 16 字节，写成大写十六进制并按 4 位分组。
+/// 主机公钥的指纹：SHA-256 的前 16 字节，写成十六进制、每 2 字节一组、共 8 组。
+///
+/// 每组固定 4 位（`{:04X}`）：拼成 u16 后高位可能是 0，用 `{:02X}` 会输出 2–4 位不等，
+/// 而操作者在 TOFU 时要逐个字符对读这个指纹。
 pub fn fingerprint_bytes(pk: &[u8]) -> String {
     let digest = Sha256::digest(pk);
     let groups: Vec<String> = digest[..16]
         .chunks(2)
-        .map(|pair| format!("{:02X}", (u16::from(pair[0]) << 8) | u16::from(pair[1])))
+        .map(|pair| format!("{:04X}", (u16::from(pair[0]) << 8) | u16::from(pair[1])))
         .collect();
     groups.join("-")
 }
@@ -295,7 +325,16 @@ impl PinnedHosts {
                 );
                 PinOutcome::New
             }
-            Some(known) if known.host_pk == pk => PinOutcome::Verified,
+            Some(known) if known.host_pk == pk => {
+                // 命中时顺手把显示串刷新成当前格式（指纹格式随版本可能变，例如修掉前导零）。
+                let current = fingerprint(host_pk);
+                if known.fingerprint != current {
+                    if let Some(slot) = self.hosts.get_mut(addr) {
+                        slot.fingerprint = current;
+                    }
+                }
+                PinOutcome::Verified
+            }
             Some(_) => PinOutcome::Changed,
         }
     }
@@ -691,6 +730,51 @@ mod tests {
             verify_auth(None, &digest, &nonce, &signature),
             Err(RejectReason::NoBoundKey)
         );
+    }
+
+    #[test]
+    fn fingerprint_groups_are_always_four_digits() {
+        // 指纹是操作者要逐字对读的：每组必须固定 4 位，不能被前导零吃掉。
+        for _ in 0..32 {
+            let kp = setup();
+            let fp = fingerprint(&kp.pk);
+            let groups: Vec<&str> = fp.split('-').collect();
+            assert_eq!(groups.len(), 8, "fingerprint shape: {fp}");
+            for group in groups {
+                assert_eq!(group.len(), 4, "group {group} in {fp}");
+                assert!(group.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_different_protocol_version_is_refused() {
+        let master = setup();
+        let (host_pk, host_sk) = sign::gen_keypair();
+        let digest = transcript();
+        let mut pinned = PinnedHosts::default();
+        let (mut master_stream, mut service_stream) = stream_pair().await;
+        // Service 侧先发一个「未来版本」的挑战，Master 必须拒绝而不是当成 v1。
+        let nonce = new_nonce();
+        let mut challenge = crate::rendezvous_proto::RendezvousMessage::new();
+        challenge.set_auth_nonce(crate::rendezvous_proto::AuthNonce {
+            nonce: bytes::Bytes::copy_from_slice(&nonce),
+            version: AUTH_VERSION + 1,
+            host_pk: bytes::Bytes::copy_from_slice(&host_pk.0),
+            host_proof: sign_host(&host_sk, &digest, &nonce).into(),
+            ..Default::default()
+        });
+        service_stream.send(&challenge).await.expect("send challenge");
+        let result = answer_challenge(
+            &mut master_stream,
+            &master,
+            &digest,
+            &mut pinned,
+            "127.0.0.1:21118",
+            true,
+        )
+        .await;
+        assert_eq!(result, Err(RejectReason::VersionMismatch));
     }
 
     #[test]
