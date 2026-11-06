@@ -56,6 +56,9 @@ pub struct LandeskConfig {
     pub push_files: Option<Vec<String>>,
     /// 允许连入的来源网段（CIDR）；空表示只用 `net::DEFAULT_NETWORKS` 里的私有网段。
     pub allowed_networks: Vec<String>,
+    /// 监听参数是不是从 `landesk.json` 读来的：监督循环只在这为 true 时重读文件，
+    /// 否则命令行给的端口会被文件覆盖（测试与临时实例就靠命令行）。
+    pub listen_spec_from_file: bool,
 }
 
 impl LandeskConfig {
@@ -203,8 +206,10 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     // 命令行没给 landesk 参数时，读可执行文件同目录的 landesk.json。
     // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
     // 必须排在 public.key 自动读取**之前**：那个文件常年存在，先读它会让整份 JSON 被跳过。
+    let mut listen_spec_from_file = false;
     if listen_port.is_none() && auth_pk.is_none() {
         if let Some((port, pk, nets)) = load_config_file() {
+            listen_spec_from_file = port.is_some();
             listen_port = port;
             auth_pk = pk;
             if allowed_networks.is_empty() {
@@ -258,6 +263,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             push_to,
             push_files,
             allowed_networks,
+            listen_spec_from_file,
         });
     }
     Ok(())
@@ -333,13 +339,38 @@ pub fn run_doctor() -> ResultType<()> {
         None => println!("  [fail] 读不到主机密钥（上游配置里的 key_pair 无效）"),
     }
 
-    if let Some(port) = config.and_then(|config| config.listen_port) {
-        let addr = format!("0.0.0.0:{port}");
-        match std::net::TcpListener::bind(&addr) {
-            Ok(_) => println!("  [ ok ] 端口 {port} 现在可以绑定"),
-            Err(err) => println!(
-                "  [warn] 端口 {port} 现在绑不了：{err}（如果 Service 已经在跑，这是正常的）"
-            ),
+    // 监听状态优先看正在跑的服务写的状态文件（它才是真相）；文件不在时再现场试绑一次。
+    match read_listen_status() {
+        Some(status) => {
+            let since = if status.since > 0 {
+                format!("（自 unix {}）", status.since)
+            } else {
+                String::new()
+            };
+            match status.state.as_str() {
+                "listening" => println!(
+                    "  [ ok ] 服务正在监听端口 {}{since}",
+                    status.port
+                ),
+                "failed" => println!(
+                    "  [fail] 服务没能监听端口 {}：{}{since}",
+                    status.port, status.error
+                ),
+                other => println!("  [info] 监听状态：{other}（端口 {}）{since}", status.port),
+            }
+        }
+        None => {
+            if let Some(port) = config.and_then(|config| config.listen_port) {
+                let addr = format!("0.0.0.0:{port}");
+                match std::net::TcpListener::bind(&addr) {
+                    Ok(_) => println!(
+                        "  [ ok ] 端口 {port} 现在可以绑定（没有状态文件：服务可能没在跑）"
+                    ),
+                    Err(err) => println!(
+                        "  [warn] 端口 {port} 现在绑不了：{err}（如果 Service 已经在跑，这是正常的）"
+                    ),
+                }
+            }
         }
     }
 
@@ -647,4 +678,89 @@ mod tests {
         take_from_args(&mut args).expect("parse");
         assert_eq!(args, vec!["--server".to_owned(), "--tray".to_owned()]);
     }
+}
+
+/// 监听参数：监督循环用它判断"配置有没有变，需不需要重绑"。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListenSpec {
+    pub port: u16,
+    pub allowed_networks: Vec<String>,
+}
+
+/// 重新读一次 `landesk.json`（**不**用启动时缓存的 `CONFIG`）。
+///
+/// 文件不存在或读不出来时回落到启动时的配置，这样纯命令行启动（没有配置文件）也照常工作。
+pub fn reload_listen_spec() -> Option<ListenSpec> {
+    let cached = config()?;
+    let port = cached.listen_port?;
+    if !cached.listen_spec_from_file {
+        // 命令行给定：配置文件的改动不应该生效（测试与临时实例靠的就是这个）。
+        return Some(ListenSpec {
+            port,
+            allowed_networks: cached.allowed_networks.clone(),
+        });
+    }
+    let file: Option<ConfigFile> = std::fs::read_to_string(config_file_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    let port = file
+        .as_ref()
+        .and_then(|file| file.listen_port)
+        .unwrap_or(port);
+    let allowed_networks = match file {
+        Some(file) if !file.allowed_networks.is_empty() => file.allowed_networks,
+        _ => cached.allowed_networks.clone(),
+    };
+    Some(ListenSpec {
+        port,
+        allowed_networks,
+    })
+}
+
+/// 监听状态：`starting` / `listening` / `failed` / `stopped`。
+#[derive(Clone, Debug, Default, serde_derive::Serialize, serde_derive::Deserialize)]
+pub struct ListenStatus {
+    pub state: String,
+    pub port: u16,
+    pub error: String,
+    pub since: i64,
+}
+
+pub fn status_file_path() -> PathBuf {
+    exe_dir().join("landesk-status.json")
+}
+
+/// 把监听状态写到 exe 同目录并记一行日志。
+///
+/// 服务端没有界面，状态只能靠这份文件（以及日志）让外部——`--landesk-doctor`、运维、界面——看到。
+pub fn publish_listen_status(state: &str, port: u16, error: &str) {
+    let previous = read_listen_status();
+    let status = ListenStatus {
+        state: state.to_owned(),
+        port,
+        error: error.to_owned(),
+        since: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default(),
+    };
+    if let Ok(text) = serde_json::to_string_pretty(&status) {
+        if let Err(err) = std::fs::write(status_file_path(), text) {
+            log::debug!("landesk: cannot write listener status: {err}");
+        }
+    }
+    let changed = previous.map(|p| (p.state, p.port, p.error) != (state.to_owned(), port, error.to_owned()))
+        .unwrap_or(true);
+    if changed {
+        match state {
+            "listening" => log::info!("landesk: listener state=listening port={port}"),
+            "failed" => log::warn!("landesk: listener state=failed port={port}: {error}"),
+            other => log::info!("landesk: listener state={other} port={port}"),
+        }
+    }
+}
+
+pub fn read_listen_status() -> Option<ListenStatus> {
+    let text = std::fs::read_to_string(status_file_path()).ok()?;
+    serde_json::from_str(&text).ok()
 }

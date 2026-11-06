@@ -741,11 +741,10 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         if crate::landesk::takes_over_network() {
             // 无出站：landesk 自己监听、自己鉴权，不向任何协调服务注册。
             log::info!("landesk: skipping the rendezvous mediator (no outbound coordination)");
-            // 上游原本靠这条永不返回的循环维持进程存活，这里由监听接管。
-            if let Some(port) = crate::landesk::config().and_then(|config| config.listen_port) {
-                if let Err(err) = crate::transport::start(port).await {
-                    log::error!("landesk: listener stopped: {err}");
-                }
+            // 上游原本靠这条永不返回的循环维持进程存活，这里由监听监督循环接管：
+            // 绑定失败会重试，端口/白名单改了会重绑，状态写进 landesk-status.json。
+            if let Err(err) = crate::transport::supervise().await {
+                log::error!("landesk: listener stopped: {err}");
             }
         } else {
             crate::RendezvousMediator::start_all().await;

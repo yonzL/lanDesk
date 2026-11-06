@@ -14,16 +14,74 @@ use hbb_common::protobuf::Message as _;
 
 const DIAL_TIMEOUT_MS: u64 = 5_000;
 
-pub async fn start(port: u16) -> ResultType<()> {
-    let listener = tcp::new_listener(("0.0.0.0", port), true).await?;
-    log::info!("landesk: service listening on {}", listener.local_addr()?);
-    let allowed = crate::landesk::net::load();
+/// 监听监督循环：绑定失败就重试，配置（端口/白名单）变了就重绑。
+///
+/// 上游靠一条永不返回的循环维持 `--server` 进程存活；这里由这个循环接管，
+/// 单个监听失败不再等于这台机器失联到下次重启。
+pub async fn supervise() -> ResultType<()> {
     let server = crate::server::new();
     loop {
-        let (stream, addr) = match listener.accept().await {
+        let Some(spec) = crate::landesk::reload_listen_spec() else {
+            crate::landesk::publish_listen_status("failed", 0, "no listen port configured");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        };
+        let listener = match tcp::new_listener(("0.0.0.0", spec.port), true).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                log::warn!(
+                    "landesk: cannot listen on port {}: {err}; retrying",
+                    spec.port
+                );
+                crate::landesk::publish_listen_status("failed", spec.port, &err.to_string());
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        log::info!("landesk: service listening on {}", listener.local_addr()?);
+        crate::landesk::publish_listen_status("listening", spec.port, "");
+        let allowed = crate::landesk::net::load();
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(serve(listener, allowed, server.clone(), stop_rx));
+        // 每秒看一次配置签名；变了就让 accept 循环退出，回到顶部用新配置重绑。
+        // 已有会话不受影响：它们持有的是各自的连接，不是这个监听。
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            match crate::landesk::reload_listen_spec() {
+                Some(current) if current != spec => {
+                    log::info!(
+                        "landesk: listen settings changed (port {} -> {}), rebinding",
+                        spec.port,
+                        current.port
+                    );
+                    break;
+                }
+                None => break,
+                _ => {}
+            }
+        }
+        crate::landesk::publish_listen_status("starting", spec.port, "");
+        let _ = stop_tx.send(true);
+        let _ = handle.await;
+    }
+}
+
+/// accept 循环：被监督循环拉起，收到停止信号就放弃监听（不碰已有会话）。
+async fn serve(
+    listener: tokio::net::TcpListener,
+    allowed: Vec<ipnet::IpNet>,
+    server: crate::server::ServerPtr,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    loop {
+        let accepted = tokio::select! {
+            _ = stop.changed() => break,
+            accepted = listener.accept() => accepted,
+        };
+        let (stream, addr) = match accepted {
             Ok(accepted) => accepted,
             Err(err) => {
-                log::warn!("landesk: accept failed on port {port}: {err}");
+                log::warn!("landesk: accept failed: {err}");
                 continue;
             }
         };
