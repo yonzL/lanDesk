@@ -62,7 +62,7 @@ mod ui_cm_interface;
 mod ui_interface;
 mod ui_session_interface;
 
-mod hbbs_http;
+mod http_client;
 pub mod addressbook;
 pub mod landesk;
 pub mod transport;
