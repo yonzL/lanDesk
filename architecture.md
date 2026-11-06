@@ -75,7 +75,8 @@ Master 的会话本体全部用上游的 `Remote`/`Session`（登录、视频解
   - 另一条必须遵守的上游约定：上传时 `to` 是**目标目录 + 文件名**、`file_num = 0`（从 Flutter 的 `file_model.dart` 查到）。
   - landesk 模式不启动查询用的 IPC 管道（没托盘），因此**同机可以并存多个 Service**——扇出测试就是这么跑的。但这与 CM 用的 `_cm` 无关：同一个用户会话里 CM 只有一个，多个 Service 会复用它。
   - “启动文件”按决定**砍掉**（需要新协议动作 + 服务端执行开关，安全边界不同）。
-- 音频与终端的 UI 回调是空实现。
+- **音频播放不需要界面回调**：解码与播放全在 `client.rs` 的 `AudioHandler`（opus 解码 + cpal 输出），由 `start_audio_thread` 驱动。界面只负责 `disable-audio` 开关与 `Permission::Audio` 的展示；服务端默认就会把已授权的连接订阅到 `audio_service`（`add_monitor_connection` 的 `noperms` 里只排除被关掉的服务）。
+- 终端（ConPTY）仍是空实现：它需要单独的终端交互界面，不在本产品当前范围。
 
 ## 并发连接：与上游一致
 
