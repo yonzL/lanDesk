@@ -67,6 +67,9 @@ jobs:
           }
       - name: cargo check -p rustdesk --lib
         run: cargo check -p rustdesk --lib
+      # 鉴权的 fail-open 回归测试（缺 transcript 必须拒），不跑就等于没堵。
+      - name: cargo test -p rustdesk --lib key_proof
+        run: cargo test -p rustdesk --lib key_proof
       - name: cargo check -p landesk-client
         run: cargo check -p landesk-client
 

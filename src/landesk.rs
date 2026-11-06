@@ -412,7 +412,7 @@ fn load_config_file() -> Option<(Option<u16>, Vec<sign::PublicKey>, Vec<String>)
 /// Service 自检：把能被机器判定的事实直接给结论，剩下需要人做的事也列出来。
 pub fn run_doctor() -> ResultType<()> {
     let dir = exe_dir();
-    println!("lanDesk 自检（只读，不改任何东西）");
+    println!("lanDesk 自检（不修改配置；但会探测一次监听端口，服务端因此会记录一条连接）");
     println!("程序目录：{}", dir.display());
 
     let config_path = config_file_path();
@@ -889,7 +889,10 @@ pub fn reload_listen_spec() -> Option<ListenSpec> {
     })
 }
 
-/// 监听状态：`starting` / `listening` / `failed` / `stopped`。
+/// 监听状态：`starting` / `listening` / `failed`。
+///
+/// 没有 `stopped`：服务被 `sc stop` 时进程直接结束，没机会写文件，所以“文件说 listening”
+/// 只代表它上次运行时在听；`--landesk-doctor` 会再探一次端口来判陈旧。
 #[derive(Clone, Debug, Default, serde_derive::Serialize, serde_derive::Deserialize)]
 pub struct ListenStatus {
     pub state: String,

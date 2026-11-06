@@ -1125,7 +1125,7 @@ impl eframe::App for App {
                                 session.set_codec_preference(value);
                             }
                             self.log
-                                .push(format!("Codec preference set to {value} (takes effect on the next connect)"));
+                                .push(format!("Codec preference set to {value} (applied now)"));
                         }
                     }
                 });
