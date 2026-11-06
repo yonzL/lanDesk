@@ -247,3 +247,25 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 （`desktop_multi_window` + `runMultiWindow`），还没做。所以 `open_remote_window` 现在优先拉起
 同目录的 `landesk-client.exe`（eframe 壳，`dist.sh` 两个 exe 一起发布），找不到才退回用自己
 ——双击过去是一个**真能用的**会话窗口，而不是坏按钮。
+
+## 13. `flutter build windows` 起来了（2026-11 本轮）
+
+```
+flutter build windows --debug
+→ √ Built build\windows\x64\runner\Debug\rustdesk.exe   (77s)
+```
+
+路上只卡了两步，都是**包与新 Flutter 不兼容**（不是我们的代码）：
+
+| 报错 | 原因 | 处理 |
+|---|---|---|
+| `_SelectableFragment` is missing implementations / `_ExtendedSelectableFragment` | `extended_text 14.0.0` 早于 Flutter 新的 `SelectableFragment` API | 升到 `^15.0.2` |
+| `google_fonts_variant.dart: Constant evaluation error` | `google_fonts 6.2.1` 与新 Dart 常量求值不兼容 | 升到 `^9.0.0` |
+
+升级后 `flutter analyze lib` 仍是 0 error。`file_picker` 那串 "references file_picker:windows as the default plugin" 是**警告**，不影响构建。
+
+实测运行（`build\windows\x64\runner\Debug\rustdesk.exe` + 同目录 `addressbook.json`）：窗口起来、标题 `lanDesk`、
+Impeller 渲染、右侧面板显示「地址簿 N 台」+ 组/子组树 + 条目状态圆点，数据来自 `bind.landeskBookList()`。
+
+**这版还会看到的上游残留**（下一步清理）：左侧「你的桌面 / ID / 一次性密码」卡片与「输入对方 ID → 连接」输入框
+——lanDesk 没有 ID、没有 rendezvous，那个框点了必然失败；以及「由 RustDesk 提供支持」的署名。
