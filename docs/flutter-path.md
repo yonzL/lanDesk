@@ -118,3 +118,23 @@
 | **Flutter SDK 版本** | 本机解包的是 **3.47.9 / Dart 3.13.7**，而上游这条分支按 3.24.5/Dart 3.5 写。`flutter analyze` 的 13 个 error 里有 9 个是 API 改名（`DialogTheme` → `DialogThemeData`、`TabBarTheme` → `TabBarThemeData`，见 `lib/common.dart:382/413/480/514`）。要么换 SDK 版本，要么改这几处调用 |
 | **登录/账号页要删** | 另外 3–4 个 error 是 `mainAccountAuthCancel` / `mainAccountAuth` 未定义——因为我们已经从 Rust 侧删掉了云账号 FFI。landesk 没有账号体系，`lib/common/widgets/login.dart` 这套页面本来就要被地址簿取代 |
 | **Developer Mode** | `flutter pub get` 提示 "Building with plugins requires symlink support"，需要机器上开启开发者模式（`start ms-settings:developers`），否则带插件的构建会失败 |
+
+## 8. 推进：改到最新 Flutter（3.47.9）
+
+决定：不在 3.24 上停留，直接把 Dart 侧改到最新 SDK。
+
+已完成：
+
+- **主题 API 改名**（4 处，`lib/common.dart`）：`DialogTheme` → `DialogThemeData`、`TabBarTheme` → `TabBarThemeData`，字段名不变（`elevation`/`shape`/`labelColor`），外观不变。
+- **删掉云账号 UI**：`login.dart`（OAuth 登录对话框）删除，并清掉它的 5 个使用点——
+  `toolbar.dart` 的 "Note" 菜单、`my_group.dart` 与 `address_book.dart` 的登录按钮、
+  桌面设置页的整个 `Account` 页签、移动设置页的 Account 段与 note 选项、`web_model.dart` 给 JS 注册的 `loginDialog`。
+  两处列表页改成说明文字：*lanDesk keeps machines in addressbook.json beside the exe; this window does not list them yet.*
+- **`flutter analyze lib` → 0 error**（362 条 info/warning 是上游既有的 deprecated/风格提示）。
+  剩下 3 个 error 在 `test/floating_mouse_hold_test.dart`：它用 `js.allowInterop`，新版 Dart 已移除；这是上游的 browser-only 测试，我们不跑它，**未改动**。
+
+下一步（需要工具链/权限）：
+
+1. `cargo build --lib --features flutter` 产出 `target/debug/librustdesk.dll`（Windows 的 CMake 从这里拷）；
+2. `flutter build windows --debug`：带插件构建需要机器开启 **Developer Mode**（symlink 支持），本机当前无管理员权限，需手动开启；
+3. 之后才是真正的 landesk 化：地址簿 FFI（`landesk_book_list` / `landesk_session_start`）+ 用地址簿替换 `my_group.dart` / `address_book.dart` 的列表。

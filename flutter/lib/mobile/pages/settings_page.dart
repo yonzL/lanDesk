@@ -13,7 +13,6 @@ import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../common.dart';
 import '../../common/widgets/dialog.dart';
-import '../../common/widgets/login.dart';
 import '../../consts.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
@@ -735,36 +734,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) == 'Y';
     final settings = SettingsList(
       sections: [
-        customClientSection,
-        if (!bind.isDisableAccount())
-          SettingsSection(
-            title: Text(translate('Account')),
-            tiles: [
-              SettingsTile(
-                title: Obx(() => Text(gFFI.userModel.userName.value.isEmpty
-                    ? translate('Login')
-                    : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})')),
-                leading: Obx(() {
-                  final avatar = bind.mainResolveAvatarUrl(
-                      avatar: gFFI.userModel.avatar.value);
-                  return buildAvatarWidget(
-                        avatar: avatar,
-                        size: 28,
-                        borderRadius: null,
-                        fallback: Icon(Icons.person),
-                      ) ??
-                      Icon(Icons.person);
-                }),
-                onPressed: (context) {
-                  if (gFFI.userModel.userName.value.isEmpty) {
-                    loginDialog();
-                  } else {
-                    logOutConfirmDialog();
-                  }
-                },
-              ),
-            ],
-          ),
         SettingsSection(title: Text(translate("Settings")), tiles: [
           if (!disabledSettings && !_hideNetwork && !_hideServer)
             SettingsTile(
@@ -930,24 +899,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                       builder: (_) => const MobileKeyboardShortcutsPage(),
                     )).then((_) {
                   if (mounted) setState(() {});
-                });
-              },
-            ),
-          if (!bind.isDisableAccount())
-            SettingsTile.switchTile(
-              title: Text(translate('note-at-conn-end-tip')),
-              initialValue: _allowAskForNoteAtEndOfConnection,
-              onToggle: (v) async {
-                if (v && !gFFI.userModel.isLogin) {
-                  final res = await loginDialog();
-                  if (res != true) return;
-                }
-                await mainSetLocalBoolOption(
-                    kOptionAllowAskForNoteAtEndOfConnection, v);
-                final newValue = mainGetLocalBoolOptionSync(
-                    kOptionAllowAskForNoteAtEndOfConnection);
-                setState(() {
-                  _allowAskForNoteAtEndOfConnection = newValue;
                 });
               },
             ),

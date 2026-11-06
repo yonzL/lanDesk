@@ -20,7 +20,6 @@ import 'package:flex_color_picker/flex_color_picker.dart';
 
 import '../../common.dart';
 import 'dialog.dart';
-import 'login.dart';
 
 final hideAbTagsPanel = false.obs;
 
@@ -39,10 +38,16 @@ class _AddressBookState extends State<AddressBook> {
 
   @override
   Widget build(BuildContext context) => Obx(() {
+        // landesk 的地址簿是本地的 addressbook.json，不走云端账号；
+        // 这个 Flutter 界面还没接到本地地址簿 FFI。
         if (!gFFI.userModel.isLogin) {
           return Center(
-              child: ElevatedButton(
-                  onPressed: loginDialog, child: Text(translate("Login"))));
+              child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                      'lanDesk keeps machines in addressbook.json beside the exe;\n'
+                      'this window does not list them yet.',
+                      textAlign: TextAlign.center)));
         } else if (gFFI.userModel.networkError.isNotEmpty) {
           return netWorkErrorWidget();
         } else {

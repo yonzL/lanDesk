@@ -26,7 +26,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../common/widgets/dialog.dart';
-import '../../common/widgets/login.dart';
 
 const double _kTabWidth = 200;
 const double _kTabHeight = 42;
@@ -75,7 +74,6 @@ class DesktopSettingPage extends StatefulWidget {
         bind.mainGetBuildinOption(key: kOptionHideNetworkSetting) != 'Y')
       SettingsTabKey.network,
     if (!bind.isIncomingOnly()) SettingsTabKey.display,
-    if (!bind.isDisableAccount()) SettingsTabKey.account,
     if (isWindows &&
         !bind.isDisableSettings() &&
         bind.mainGetBuildinOption(key: kOptionHideRemotePrinterSetting) != 'Y')
@@ -204,8 +202,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
               Icons.desktop_windows_outlined, Icons.desktop_windows));
           break;
         case SettingsTabKey.account:
-          settingTabs.add(
-              _TabInfo(tab, 'Account', Icons.person_outline, Icons.person));
+          // landesk 没有账号：这个页签不再出现在 tabKeys 里。
           break;
         case SettingsTabKey.printer:
           settingTabs
@@ -237,7 +234,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           children.add(const _Display());
           break;
         case SettingsTabKey.account:
-          children.add(const _Account());
+          // landesk 没有账号：这个页签不再出现在 tabKeys 里。
           break;
         case SettingsTabKey.printer:
           children.add(const _Printer());
@@ -656,21 +653,6 @@ class _GeneralState extends State<_General> {
       ));
     }
 
-    if (!bind.isDisableAccount()) {
-      children.add(_OptionCheckBox(
-        context,
-        'note-at-conn-end-tip',
-        kOptionAllowAskForNoteAtEndOfConnection,
-        isServer: false,
-        optSetter: (key, value) async {
-          if (value && !gFFI.userModel.isLogin) {
-            final res = await loginDialog();
-            if (res != true) return;
-          }
-          await mainSetLocalBoolOption(key, value);
-        },
-      ));
-    }
     children.add(_OptionCheckBox(
       context,
       'Show monitor switch button on the main toolbar',
@@ -2271,98 +2253,6 @@ class _DisplayState extends State<_Display> {
   }
 }
 
-class _Account extends StatefulWidget {
-  const _Account({Key? key}) : super(key: key);
-
-  @override
-  State<_Account> createState() => _AccountState();
-}
-
-class _AccountState extends State<_Account> {
-  @override
-  Widget build(BuildContext context) {
-    final scrollController = ScrollController();
-    return ListView(
-      controller: scrollController,
-      children: [
-        _Card(title: 'Account', children: [accountAction(), useInfo()]),
-      ],
-    ).marginOnly(bottom: _kListViewBottomMargin);
-  }
-
-  Widget accountAction() {
-    return Obx(() => _Button(
-        gFFI.userModel.userName.value.isEmpty
-            ? 'Login'
-            : '${translate('Logout')} (${gFFI.userModel.accountLabelWithHandle})',
-        () => {
-              gFFI.userModel.userName.value.isEmpty
-                  ? loginDialog()
-                  : logOutConfirmDialog()
-            }));
-  }
-
-  Widget useInfo() {
-    return Obx(() => Offstage(
-          offstage: gFFI.userModel.userName.value.isEmpty,
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Builder(builder: (context) {
-              final avatarWidget = _buildUserAvatar();
-              return Row(
-                children: [
-                  if (avatarWidget != null) avatarWidget,
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          gFFI.userModel.displayNameOrUserName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        SelectionArea(
-                          child: Text(
-                            '@${gFFI.userModel.userName.value}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color:
-                                  Theme.of(context).textTheme.bodySmall?.color,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            }),
-          ),
-        )).marginOnly(left: 18, top: 16);
-  }
-
-  Widget? _buildUserAvatar() {
-    // Resolve relative avatar path at display time
-    final avatar =
-        bind.mainResolveAvatarUrl(avatar: gFFI.userModel.avatar.value);
-    return buildAvatarWidget(
-      avatar: avatar,
-      size: 44,
-    );
-  }
-}
 
 class _Checkbox extends StatefulWidget {
   final String label;

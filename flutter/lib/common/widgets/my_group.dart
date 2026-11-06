@@ -2,7 +2,6 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/hbbs/hbbs.dart';
-import 'package:flutter_hbb/common/widgets/login.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
@@ -30,10 +29,17 @@ class _MyGroupState extends State<MyGroup> {
   @override
   Widget build(BuildContext context) {
     return Obx(() {
+      // landesk 没有账号体系：设备清单来自地址簿（`addressbook.json`），不在云端。
+      // 这个 Flutter 界面还没接到我们的地址簿 FFI，所以先把“登录”位换成说明，
+      // 而不是留一个点了没反应的按钮。
       if (!gFFI.userModel.isLogin) {
         return Center(
-            child: ElevatedButton(
-                onPressed: loginDialog, child: Text(translate("Login"))));
+            child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                    'lanDesk keeps machines in addressbook.json beside the exe;\n'
+                    'this window does not list them yet.',
+                    textAlign: TextAlign.center)));
       } else if (gFFI.userModel.networkError.isNotEmpty) {
         return netWorkErrorWidget();
       } else if (gFFI.groupModel.groupLoading.value && gFFI.groupModel.emtpy) {
