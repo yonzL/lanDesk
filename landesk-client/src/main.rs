@@ -567,6 +567,21 @@ impl App {
         // 按住 Ctrl/Alt 时 egui 不再产生文本事件（它把这些当快捷键），所以这时要靠
         // `Event::Key` 把字母/数字本身发过去，否则远端只收到一个孤零零的 Ctrl。
         let shortcut_mode = ctrl || alt;
+        // 一个字符变成一个 `chr` 事件对（down + up，与上游同形）：目标机按自己的布局/Unicode 注入。
+        let send_text = |text: &str| {
+            for ch in text.chars() {
+                for down in [true, false] {
+                    let mut evt = KeyEvent::new();
+                    evt.set_chr(ch as u32);
+                    evt.down = down;
+                    evt.press = down;
+                    evt.mode = KeyboardMode::Legacy.into();
+                    // 远端靠这个字段判断“这是不是组合键”（has_hotkey_modifiers）。
+                    evt.modifiers = held_modifiers(alt, ctrl, shift);
+                    session.send_key(&evt);
+                }
+            }
+        };
         for event in events {
             match event {
                 // 可打印字符走 legacy 模式的 unicode 通道：目标机自己按自己的键盘布局查键码。
@@ -574,20 +589,18 @@ impl App {
                     if shortcut_mode {
                         continue;
                     }
-                    for ch in text.chars() {
-                        // 与上游一致：一个字符发一对 down/up，否则远端会把这个键留在按下状态。
-                        for down in [true, false] {
-                            let mut evt = KeyEvent::new();
-                            evt.set_chr(ch as u32);
-                            evt.down = down;
-                            evt.press = down;
-                            evt.mode = KeyboardMode::Legacy.into();
-                            // 远端靠这个字段判断“这是不是组合键”（has_hotkey_modifiers）。
-                            evt.modifiers = held_modifiers(alt, ctrl, shift);
-                            session.send_key(&evt);
-                        }
-                    }
+                    send_text(&text);
                 }
+                // 输入法组合完成的字走的是**这里**而不是 `Event::Text`（egui-winit 的
+                // `Ime::Commit` → `Event::Ime(ImeEvent::Commit)`），不处理就等于中文全被丢掉。
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                    if shortcut_mode {
+                        continue;
+                    }
+                    send_text(&text);
+                }
+                // 正在组合中的预编辑文本不能发给远端，否则会把拼音也打出去。
+                egui::Event::Ime(_) => {}
                 egui::Event::Key {
                     key,
                     pressed,

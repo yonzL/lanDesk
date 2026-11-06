@@ -124,3 +124,25 @@ release 构建写文件日志，路径由 `Config::log_path()` 决定，进程�
 ## 13. 编码线程数的第二道闸
 
 `codec_thread_num` 除了按 CPU 占用折算，还有两道 min：`max/2` 和 **`available_memory/2`（GB）**。所以 4 核 + 4GB 可用内存的机器最终是 2 线程——内存紧张时它比 CPU 更早限制并发编码。服务端日志同时打印 `cpu num` 与 `available memory`，判断卡顿要看这一行，而不是只看核数。
+
+## 14. 客户端输入事件全集（一次列全，别按关键词搜）
+
+排障教训：只看想到的那个关键词（`set_ime_allowed`）会漏掉同一文件里的其他分支。**输入类问题固定这样做**：
+在 dependenc 里 grep 所有 `events.push(egui::Event::`，在我们代码里 grep 所有 `egui::Event::` 分支，然后**做差集**。
+
+egui-winit 0.31.1 真正会产出的、与远端输入有关的事件：
+
+| egui 事件 | 产生处（egui-winit） | 语义 | 我们 client 的处理 |
+|---|---|---|---|
+| `Event::Text(String)` | `:806`（winit `KeyboardInput.text`，且 `pressed && !ctrl/command`） | 非 IME 路径的可打印字符 | ✅ 转 `chr` 键对 |
+| `Event::Ime(ImeEvent::Commit(String))` | `:366`（winit `Ime::Commit`） | **输入法提交的最终文本** | ✅ 转 `chr` 键对（曾经漏掉，导致中文全丢） |
+| `Event::Ime(ImeEvent::Preedit(String))` | `:359` | 组合中的拼音/候选 | ❌ 故意不回传，否则远端会打出拼音 |
+| `Event::Key{...}` | `:783` | 所有按键（含修饰键、功能键） | ✅ 控制键 / 修饰键 / 组合键字母 |
+| `Event::Cut` / `Event::Copy` | `:767` / `:770` | Ctrl+X / Ctrl+C，**无条件产生** | ✅ 合成 `Ctrl+X/C` 键对 |
+| `Event::Paste(String)` | `:776` | Ctrl+V，**仅当文本剪贴板非空** | ✅ 合成 `Ctrl+V`；剪贴板是文件时**没有事件** → 用 `GetAsyncKeyState` 轮询兜底 |
+| 指针 / 滚轮 / `Zoom` / `Touch` | `:530`、`:707` 等 | 鼠标与手势 | ✅ 用 `i.pointer` 状态换算坐标后发 `send_mouse`，不消费这些事件 |
+
+两条附带事实：
+
+1. **`Event::Text` 在按住 Ctrl/Cmd 时被抑制**（`:804` 的 `is_cmd` 判断），所以组合键场景必须靠 `Event::Key` 自己补字符。
+2. **窗口级 IME 由 `platform_output.ime.is_some()` 决定**（`:866` → `set_ime_allowed`）。egui 里只有 `TextEdit` 会设它，所以想让画面区域能输入中文，必须由我们自己每帧把它指向画面（`landesk-client` 已做）。
