@@ -142,21 +142,41 @@ pub fn sign_auth(kp: &GlobalKeyPair, transcript: &[u8; 32], nonce: &[u8]) -> Vec
 }
 
 /// Service 侧：用绑定的公钥验签。`None` 表示这台 Service 还没绑定公钥。
+/// 服务端验签：只要签名命中**集合里任意一把**就通过。
+///
+/// 一个网络里可能有多台 Master，每台一把密钥；空集合视为未绑定（一律拒）。
+pub fn verify_auth_any(
+    bound_pks: &[sign::PublicKey],
+    transcript: &[u8; 32],
+    nonce: &[u8],
+    signature: &[u8],
+) -> std::result::Result<(), RejectReason> {
+    if bound_pks.is_empty() {
+        return Err(RejectReason::NoBoundKey);
+    }
+    if nonce.len() != NONCE_LEN {
+        return Err(RejectReason::BadSignature);
+    }
+    let expected = signed_payload(transcript, nonce);
+    for pk in bound_pks {
+        if let Ok(message) = sign::verify(signature, pk) {
+            if message == expected {
+                return Ok(());
+            }
+        }
+    }
+    Err(RejectReason::BadSignature)
+}
+
 pub fn verify_auth(
     bound_pk: Option<&sign::PublicKey>,
     transcript: &[u8; 32],
     nonce: &[u8],
     signature: &[u8],
 ) -> std::result::Result<(), RejectReason> {
-    let Some(pk) = bound_pk else {
-        return Err(RejectReason::NoBoundKey);
-    };
-    if nonce.len() != NONCE_LEN {
-        return Err(RejectReason::BadSignature);
-    }
-    match sign::verify(signature, pk) {
-        Ok(message) if message == signed_payload(transcript, nonce) => Ok(()),
-        _ => Err(RejectReason::BadSignature),
+    match bound_pk {
+        Some(pk) => verify_auth_any(std::slice::from_ref(pk), transcript, nonce, signature),
+        None => Err(RejectReason::NoBoundKey),
     }
 }
 
@@ -313,9 +333,32 @@ pub async fn challenge_and_verify(
     host_sk: &sign::SecretKey,
     transcript: &[u8; 32],
 ) -> std::result::Result<AuthRole, RejectReason> {
-    let Some(pk) = bound_pk else {
+    match bound_pk {
+        Some(pk) => {
+            challenge_and_verify_any(
+                stream,
+                std::slice::from_ref(pk),
+                host_pk,
+                host_sk,
+                transcript,
+            )
+            .await
+        }
+        None => Err(RejectReason::NoBoundKey),
+    }
+}
+
+/// 同一件事的集合版：命中任意一把绑定的 client 公钥即通过。
+pub async fn challenge_and_verify_any(
+    stream: &mut crate::tcp::FramedStream,
+    bound_pks: &[sign::PublicKey],
+    host_pk: &sign::PublicKey,
+    host_sk: &sign::SecretKey,
+    transcript: &[u8; 32],
+) -> std::result::Result<AuthRole, RejectReason> {
+    if bound_pks.is_empty() {
         return Err(RejectReason::NoBoundKey);
-    };
+    }
     let nonce = new_nonce();
     let mut challenge = crate::rendezvous_proto::RendezvousMessage::new();
     challenge.set_auth_nonce(crate::rendezvous_proto::AuthNonce {
@@ -334,7 +377,7 @@ pub async fn challenge_and_verify(
             Ok(crate::rendezvous_proto::RendezvousMessage {
                 union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthProof(proof)),
                 ..
-            }) => match verify_auth(Some(pk), transcript, &nonce, &proof.signature) {
+            }) => match verify_auth_any(bound_pks, transcript, &nonce, &proof.signature) {
                 Ok(()) => {
                     // 显式告诉对面“过了”：否则 Master 分不清“被拒”与“连接没了”。
                     let mut ok = crate::rendezvous_proto::RendezvousMessage::new();
@@ -446,6 +489,42 @@ mod tests {
         let digest = transcript();
         let signature = sign_auth(&kp, &digest, &nonce);
         assert_eq!(verify_auth(Some(&kp.pk), &digest, &nonce, &signature), Ok(()));
+    }
+
+    #[test]
+    fn any_key_in_the_set_is_accepted() {
+        let kp = setup();
+        let other = setup();
+        let nonce = new_nonce();
+        let digest = transcript();
+        let signature = sign_auth(&kp, &digest, &nonce);
+        let set = vec![other.pk, kp.pk];
+        assert_eq!(verify_auth_any(&set, &digest, &nonce, &signature), Ok(()));
+    }
+
+    #[test]
+    fn a_signature_outside_the_set_is_refused() {
+        let kp = setup();
+        let stranger = setup();
+        let nonce = new_nonce();
+        let digest = transcript();
+        let signature = sign_auth(&stranger, &digest, &nonce);
+        assert_eq!(
+            verify_auth_any(std::slice::from_ref(&kp.pk), &digest, &nonce, &signature),
+            Err(RejectReason::BadSignature)
+        );
+    }
+
+    #[test]
+    fn an_empty_set_refuses_everything() {
+        let kp = setup();
+        let nonce = new_nonce();
+        let digest = transcript();
+        let signature = sign_auth(&kp, &digest, &nonce);
+        assert_eq!(
+            verify_auth_any(&[], &digest, &nonce, &signature),
+            Err(RejectReason::NoBoundKey)
+        );
     }
 
     #[test]
