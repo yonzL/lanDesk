@@ -66,3 +66,9 @@ dist/
 
 # 本地测试用的客户端运行目录
 run-client/
+
+# 私钥与运行时状态绝不入库
+*.key
+landesk-status.json
+.av1e/
+.stale/
