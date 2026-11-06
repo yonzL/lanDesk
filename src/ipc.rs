@@ -1195,23 +1195,6 @@ async fn handle(data: Data, stream: &mut Connection) {
                     .await
             );
         }
-        #[cfg(target_os = "macos")]
-        Data::HasNoActiveConns(None) => {
-            allow_err!(
-                stream
-                    .send(&Data::HasNoActiveConns(Some(
-                        crate::updater::has_no_active_conns()
-                    )))
-                    .await
-            );
-        }
-        #[cfg(all(
-            feature = "flutter",
-            not(any(target_os = "android", target_os = "ios"))
-        ))]
-        Data::ControllingSessionCount(count) => {
-            crate::updater::update_controlling_session_count(count);
-        }
         #[cfg(target_os = "linux")]
         Data::TerminalSessionCount(_) => {
             let count = crate::terminal_service::get_terminal_session_count(true);

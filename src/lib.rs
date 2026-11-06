@@ -29,8 +29,6 @@ pub mod ipc;
 pub mod ui;
 pub(crate) mod update_metadata;
 pub(crate) mod update_hash;
-#[cfg(target_os = "macos")]
-mod manual_update;
 mod version;
 pub use version::*;
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
@@ -59,7 +57,6 @@ mod tray;
 mod whiteboard;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-mod updater;
 
 mod ui_cm_interface;
 mod ui_interface;
