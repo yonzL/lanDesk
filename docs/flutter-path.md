@@ -138,3 +138,24 @@
 1. `cargo build --lib --features flutter` 产出 `target/debug/librustdesk.dll`（Windows 的 CMake 从这里拷）；
 2. `flutter build windows --debug`：带插件构建需要机器开启 **Developer Mode**（symlink 支持），本机当前无管理员权限，需手动开启；
 3. 之后才是真正的 landesk 化：地址簿 FFI（`landesk_book_list` / `landesk_session_start`）+ 用地址簿替换 `my_group.dart` / `address_book.dart` 的列表。
+
+### 阶段 A 的最后一堵墙：Developer Mode
+
+`flutter build windows --debug` 在 `flutter pub get` 之后会停在：
+
+```
+Building with plugins requires symlink support.
+Please enable Developer Mode in your system settings.
+```
+
+Flutter 在 Windows 上把每个插件的平台实现软链到 `windows/flutter/ephemeral/.plugin_symlinks`，
+这需要开发者模式（或管理员）。一次性设置：
+
+```powershell
+start ms-settings:developers     # 打开"开发人员模式"
+# 或管理员 PowerShell：
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+```
+
+（同一次构建还会刷一堆 `file_picker` 的 "references file_picker:windows as the default plugin"
+告警——那是它新版联邦插件布局的自引用提示，属噪音，与失败无关。）
