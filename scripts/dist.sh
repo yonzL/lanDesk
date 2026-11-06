@@ -24,13 +24,26 @@ mkdir -p "$OUT"
 cp "$SRC/$SERVER" "$OUT/"
 cp "$SRC/$CLIENT" "$OUT/"
 
+# Flutter 主界面（正式版）：整套 runner 产物放进 master/，并把 exe 改名成 landesk-master.exe。
+# 里面还要放一份 landesk-client.exe——双击连接时它会拉起同目录的这个 eframe 壳。
+FLUTTER_OUT=flutter/build/windows/x64/runner/Release
+if [ -f "$FLUTTER_OUT/rustdesk.exe" ]; then
+    mkdir -p "$OUT/master"
+    cp -r "$FLUTTER_OUT/." "$OUT/master/"
+    mv "$OUT/master/rustdesk.exe" "$OUT/master/landesk-master.exe"
+    cp "$SRC/$CLIENT" "$OUT/master/"
+else
+    echo "提示：没有 $FLUTTER_OUT —— 先跑 flutter build windows --release，否则包里只有 eframe 界面"
+fi
+
 cat > "$OUT/使用说明.txt" <<'EOF'
 lanDesk 试用包
 ==============
 
 两个程序：
   landesk-server.exe  被控机跑它（Service），控制机上也能用它做命令行操作
-  landesk-client.exe  控制机的图形界面
+  master\landesk-master.exe  控制机的正式界面（Flutter）
+  landesk-client.exe  控制机的备用界面（eframe），也是 master 双击连接时拉起的那个
 
 一、被控机（要被人远程看到的那台）
   1. 在控制机上先跑一次，生成密钥对并记下打印出的 public key：
@@ -46,14 +59,15 @@ lanDesk 试用包
          netsh advfirewall firewall add rule name="lanDesk" dir=in action=allow protocol=TCP localport=21118
 
 二、控制机
-  1. 把 master.key 放在 landesk-client.exe 同目录，并改名为 private.key。
+  1. 把 master.key 放在 master\landesk-master.exe 同目录，并改名为 private.key。
   2. 准备一份清单 hosts.csv：
          组,子组,显示名,地址
          办公室,开发组,工位-01,10.0.0.5:21118
      导入：
          landesk-server.exe --landesk-book-import hosts.csv
-  3. 打开 landesk-client.exe，左边选机器，点“连接（申请操作权）”。
-  4. 首次连接会把对方主机指纹记下来（未验证）。核对无误后点“核过指纹，标为已验证”。
+     （地址簿文件 addressbook.json 要在 master\ 里，界面才读得到；或者直接在界面里“添加”。）
+  3. 打开 master\landesk-master.exe：左侧是说明，右侧是地址簿树；双击机器即开一个会话窗口。
+  4. 首次连接会把对方主机指纹记下来（未验证）。核对无误后在那一行的菜单里选“标记指纹为已验证”。
      之后指纹一变就连不上——那说明机器换了密钥，需要你确认。
 
 三、批量分发（同一批文件推给多台）
