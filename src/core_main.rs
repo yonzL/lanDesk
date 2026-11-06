@@ -108,6 +108,12 @@ pub fn core_main() -> Option<CoreMainAction> {
                 Err(err) => Some(CoreMainAction::ExitFailure(err)),
             };
         }
+        if config.client_list || config.allow_client.is_some() || config.revoke_client.is_some() {
+            return match crate::landesk::run_client_key_command(config) {
+                Ok(()) => None,
+                Err(err) => Some(CoreMainAction::ExitFailure(err)),
+            };
+        }
         if config.doctor {
             return match crate::landesk::run_doctor() {
                 Ok(()) => None,

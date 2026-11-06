@@ -143,7 +143,17 @@ landesk-server.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-k
 landesk-server.exe --install-service
 ```
 
-服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `landesk-server.exe --server` 也会读它。`landesk.json` 里就是三项：`listen_port`、`auth_key` 与可选的 `allowed_networks`。
+服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `landesk-server.exe --server` 也会读它。`landesk.json` 里是 `listen_port`、`auth_keys`（允许接入的 Master 公钥列表）与可选的 `allowed_networks`。
+
+**多台 Master，每台一把密钥：** 每台 Master 用 `--landesk-genkey` 生成自己的密钥对，把它的 `public.key` 分发到各台 Service，然后在 Service 上加入（不需要重启服务，下一次连接就生效）：
+
+```bash
+landesk-server.exe --landesk-allow-client <公钥十六进制或 public.key 路径>
+landesk-server.exe --landesk-revoke-client <公钥十六进制或 public.key 路径>   # 某台 Master 失窃时
+landesk-server.exe --landesk-client-list                                    # 看当前允许哪些
+```
+
+旧的单值写法 `auth_key: "<hex>"` 仍然可读，视为列表里的一个元素（那就是“一把钥匙开全网”的形态）。
 
 **来源网络白名单（默认只收私有网段）：** 监听端口默认只接受私有地址段的连接（`10/8`、`172.16/12`、`192.168/16`、`100.64/10`、`127/8`、`169.254/16`、`fc00::/7`、`fe80::/10`、`::1/128`），公网来源在握手前就被丢弃并记一行 `rejected connection from disallowed source`。要跨公网用，就显式配一份列表（配了就是**替换**默认值）：
 

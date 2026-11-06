@@ -26,8 +26,8 @@ pub const DEFAULT_LISTEN_PORT: u16 = 21118;
 pub struct LandeskConfig {
     /// 直连监听端口。给出 `--landesk-listen` 时 Service 会在该端口接受连接。
     pub listen_port: Option<u16>,
-    /// 安装时绑定的全局公钥；`None` 表示这台 Service 还没绑定，一律拒绝。
-    pub auth_pk: Option<sign::PublicKey>,
+    /// 允许接入的 Master 公钥集合（每台 client 一把）；空表示这台 Service 还没绑定，一律拒绝。
+    pub auth_pks: Vec<sign::PublicKey>,
     /// Master 侧：要拨号的 `地址:端口`。
     pub connect: Option<String>,
     /// Master 侧：地址簿文件；缺省是可执行文件同目录的 `addressbook.json`。
@@ -56,6 +56,12 @@ pub struct LandeskConfig {
     pub push_files: Option<Vec<String>>,
     /// 允许连入的来源网段（CIDR）；空表示只用 `net::DEFAULT_NETWORKS` 里的私有网段。
     pub allowed_networks: Vec<String>,
+    /// 服务端：允许一个 client 公钥（十六进制或 `public.key` 路径）。
+    pub allow_client: Option<String>,
+    /// 服务端：撤销一个 client 公钥。
+    pub revoke_client: Option<String>,
+    /// 服务端：列出已绑定的 client 公钥。
+    pub client_list: bool,
     /// 监听参数是不是从 `landesk.json` 读来的：监督循环只在这为 true 时重读文件，
     /// 否则命令行给的端口会被文件覆盖（测试与临时实例就靠命令行）。
     pub listen_spec_from_file: bool,
@@ -87,7 +93,7 @@ static CONFIG: OnceLock<LandeskConfig> = OnceLock::new();
 /// 不带值的 `--landesk-listen` 表示用默认端口。
 pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut listen_port = None;
-    let mut auth_pk = None;
+    let mut auth_pks: Vec<sign::PublicKey> = Vec::new();
     let mut connect = None;
     let mut book = None;
     let mut key = None;
@@ -103,6 +109,9 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut push_files = None;
     let mut view = false;
     let mut allowed_networks: Vec<String> = Vec::new();
+    let mut allow_client = None;
+    let mut revoke_client = None;
+    let mut client_list = false;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -121,13 +130,13 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 let Some(value) = iter.next() else {
                     bail!("--landesk-auth-key needs a hex-encoded public key");
                 };
-                auth_pk = Some(parse_public_key(&value)?);
+                auth_pks.push(parse_public_key(&value)?);
             }
             "--landesk-auth-key-file" => {
                 let Some(value) = iter.next() else {
                     bail!("--landesk-auth-key-file needs a path to public.key");
                 };
-                auth_pk = Some(read_public_key_file(std::path::Path::new(&value))?);
+                auth_pks.push(read_public_key_file(std::path::Path::new(&value))?);
             }
             "--landesk-connect" => {
                 let Some(value) = iter.next() else {
@@ -198,6 +207,19 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 };
                 push_files = Some(split_list(&value));
             }
+            "--landesk-allow-client" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-allow-client needs a hex key or a public.key path");
+                };
+                allow_client = Some(value);
+            }
+            "--landesk-revoke-client" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-revoke-client needs a hex key or a public.key path");
+                };
+                revoke_client = Some(value);
+            }
+            "--landesk-client-list" => client_list = true,
             "--landesk-view" => view = true,
             _ => rest.push(arg),
         }
@@ -207,11 +229,11 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
     // 必须排在 public.key 自动读取**之前**：那个文件常年存在，先读它会让整份 JSON 被跳过。
     let mut listen_spec_from_file = false;
-    if listen_port.is_none() && auth_pk.is_none() {
-        if let Some((port, pk, nets)) = load_config_file() {
+    if listen_port.is_none() && auth_pks.is_empty() {
+        if let Some((port, keys, nets)) = load_config_file() {
             listen_spec_from_file = port.is_some();
             listen_port = port;
-            auth_pk = pk;
+            auth_pks = keys;
             if allowed_networks.is_empty() {
                 allowed_networks = nets;
             }
@@ -219,11 +241,11 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     }
 
     // 还是没有公钥时，默认读程序同目录的 public.key——装 Service 时只要把这个文件拷过去。
-    if auth_pk.is_none() {
+    if auth_pks.is_empty() {
         let candidate = exe_dir().join("public.key");
         if candidate.is_file() {
             if let Ok(pk) = read_public_key_file(&candidate) {
-                auth_pk = Some(pk);
+                auth_pks.push(pk);
                 log::info!(
                     "landesk: using the public key from {}",
                     candidate.display()
@@ -233,7 +255,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     }
 
     if listen_port.is_some()
-        || auth_pk.is_some()
+        || !auth_pks.is_empty()
         || connect.is_some()
         || genkey.is_some()
         || book_import.is_some()
@@ -243,11 +265,14 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || save_config
         || view
         || doctor
+        || allow_client.is_some()
+        || revoke_client.is_some()
+        || client_list
         || push.is_some()
     {
         CONFIG.get_or_init(|| LandeskConfig {
             listen_port,
-            auth_pk,
+            auth_pks,
             connect,
             book,
             key,
@@ -264,6 +289,9 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             push_files,
             allowed_networks,
             listen_spec_from_file,
+            allow_client,
+            revoke_client,
+            client_list,
         });
     }
     Ok(())
@@ -272,29 +300,51 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
 /// `landesk.json` 的形状：服务开机自启时读的那份配置。
 #[derive(Debug, Default, serde_derive::Serialize, serde_derive::Deserialize)]
 struct ConfigFile {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     listen_port: Option<u16>,
-    #[serde(default)]
+    /// 允许接入的 Master 公钥（每台 client 一把）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    auth_keys: Vec<String>,
+    /// 旧版单值形式：继续可读，视为集合里的一个元素（新写入不再产生它）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     auth_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     allowed_networks: Vec<String>,
+}
+
+impl ConfigFile {
+    /// 公钥集合：`auth_keys` 在前，旧 `auth_key` 附加在后（去重）。
+    fn public_keys(&self) -> Vec<sign::PublicKey> {
+        let mut keys: Vec<sign::PublicKey> = Vec::new();
+        for hex in self
+            .auth_keys
+            .iter()
+            .chain(self.auth_key.iter())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            match parse_public_key(hex) {
+                Ok(pk) if !keys.contains(&pk) => keys.push(pk),
+                Ok(_) => {}
+                Err(_) => log::warn!("landesk: ignoring an unparsable public key in landesk.json"),
+            }
+        }
+        keys
+    }
 }
 
 fn config_file_path() -> PathBuf {
     exe_dir().join("landesk.json")
 }
 
-fn load_config_file() -> Option<(Option<u16>, Option<sign::PublicKey>, Vec<String>)> {
+fn load_config_file() -> Option<(Option<u16>, Vec<sign::PublicKey>, Vec<String>)> {
     let text = std::fs::read_to_string(config_file_path()).ok()?;
     let file: ConfigFile = serde_json::from_str(&text).ok()?;
-    let auth_pk = file
-        .auth_key
-        .as_deref()
-        .and_then(|key| parse_public_key(key).ok());
-    if file.listen_port.is_none() && auth_pk.is_none() {
+    let auth_pks = file.public_keys();
+    if file.listen_port.is_none() && auth_pks.is_empty() {
         None
     } else {
-        Some((file.listen_port, auth_pk, file.allowed_networks))
+        Some((file.listen_port, auth_pks, file.allowed_networks))
     }
 }
 
@@ -326,9 +376,14 @@ pub fn run_doctor() -> ResultType<()> {
         ),
     }
 
-    match config.and_then(|config| config.auth_pk.as_ref()) {
-        Some(pk) => println!("  [ ok ] 已绑定公钥：{}", public_key_hex(pk)),
-        None => println!("  [fail] 没有绑定公钥：所有连接都会被拒（no-bound-key）"),
+    let bound_keys = reload_auth_keys();
+    if bound_keys.is_empty() {
+        println!("  [fail] 没有绑定任何公钥：所有连接都会被拒（no-bound-key）");
+    } else {
+        println!("  [ ok ] 已绑定 {} 把公钥（任一命中即放行）：", bound_keys.len());
+        for pk in bound_keys.iter() {
+            println!("         {}", public_key_hex(pk));
+        }
     }
 
     match host_keypair() {
@@ -389,10 +444,11 @@ pub fn save_config_file(config: &LandeskConfig) -> ResultType<PathBuf> {
     let path = config_file_path();
     let file = ConfigFile {
         listen_port: config.listen_port,
-        auth_key: config.auth_pk.as_ref().map(public_key_hex),
+        auth_keys: config.auth_pks.iter().map(public_key_hex).collect(),
+        auth_key: None,
         allowed_networks: config.allowed_networks.clone(),
     };
-    if file.listen_port.is_none() && file.auth_key.is_none() {
+    if file.listen_port.is_none() && file.auth_keys.is_empty() {
         bail!("--landesk-save-config 需要同时给 --landesk-listen 或 --landesk-auth-key");
     }
     let text = serde_json::to_string_pretty(&file)
@@ -607,15 +663,17 @@ pub async fn enforce(
     transcript: &[u8; 32],
     addr: SocketAddr,
 ) -> ResultType<keyauth::AuthRole> {
-    let Some(config) = config() else {
+    if config().is_none() {
         return Ok(keyauth::AuthRole::Controller);
-    };
+    }
+    // 每次连接重读：allow/revoke 不需要重启服务。
+    let keys = reload_auth_keys();
     let result = match stream {
         hbb_common::Stream::Tcp(tcp) => match host_keypair() {
             Some((host_pk, host_sk)) => {
-                keyauth::challenge_and_verify(
+                keyauth::challenge_and_verify_any(
                     tcp,
-                    config.auth_pk.as_ref(),
+                    &keys,
                     &host_pk,
                     &host_sk,
                     transcript,
@@ -763,4 +821,92 @@ pub fn publish_listen_status(state: &str, port: u16, error: &str) {
 pub fn read_listen_status() -> Option<ListenStatus> {
     let text = std::fs::read_to_string(status_file_path()).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// 当前允许接入的 Master 公钥集合。
+///
+/// **每次连接都重读** `landesk.json`：这样 `--landesk-allow-client` / `--landesk-revoke-client`
+/// 改完立刻生效，不需要重启服务。文件不在或读不出来时回落到启动时的配置。
+pub fn reload_auth_keys() -> Vec<sign::PublicKey> {
+    let from_file = std::fs::read_to_string(config_file_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<ConfigFile>(&text).ok())
+        .map(|file| file.public_keys())
+        .unwrap_or_default();
+    if !from_file.is_empty() {
+        return from_file;
+    }
+    config()
+        .map(|config| config.auth_pks.clone())
+        .unwrap_or_default()
+}
+
+/// 把 `--landesk-allow-client` / `--landesk-revoke-client` 的参数理解成一把公钥。
+///
+/// 既接受十六进制公钥，也接受 `public.key` 文件路径——分钥时把文件拷过去更自然。
+fn parse_key_arg(value: &str) -> ResultType<sign::PublicKey> {
+    let path = std::path::Path::new(value);
+    if path.is_file() {
+        return read_public_key_file(path);
+    }
+    parse_public_key(value)
+}
+
+fn read_config_file_or_default() -> ConfigFile {
+    std::fs::read_to_string(config_file_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_config_file(file: &ConfigFile) -> ResultType<()> {
+    let path = config_file_path();
+    let text = serde_json::to_string_pretty(file)
+        .map_err(|err| hbb_common::anyhow::anyhow!("serializing landesk.json: {err}"))?;
+    std::fs::write(&path, text)
+        .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", path.display()))
+}
+
+/// 服务端的 client 公钥管理：加入 / 撤销 / 列出。
+pub fn run_client_key_command(config: &LandeskConfig) -> ResultType<()> {
+    if config.client_list {
+        let keys = reload_auth_keys();
+        if keys.is_empty() {
+            println!("没有绑定任何公钥：所有连接都会被拒");
+        } else {
+            println!("已绑定 {} 把公钥（任一命中即放行）：", keys.len());
+            for pk in keys {
+                println!("  {}", public_key_hex(&pk));
+            }
+        }
+        return Ok(());
+    }
+    let (target, adding) = if let Some(value) = &config.allow_client {
+        (value, true)
+    } else if let Some(value) = &config.revoke_client {
+        (value, false)
+    } else {
+        return Ok(());
+    };
+    let key = parse_key_arg(target)?;
+    let hex = public_key_hex(&key);
+    let mut file = read_config_file_or_default();
+    file.auth_keys.retain(|existing| {
+        parse_public_key(existing.trim())
+            .map(|parsed| parsed != key)
+            .unwrap_or(true)
+    });
+    if adding {
+        file.auth_keys.push(hex.clone());
+    }
+    write_config_file(&file)?;
+    if adding {
+        println!("已允许 client 公钥 {hex}（下一次连接起生效，不需要重启服务）");
+    } else {
+        println!("已撤销 client 公钥 {hex}（下一次连接起生效）");
+    }
+    if file.listen_port.is_none() {
+        println!("提示：landesk.json 里还没有 listen_port，服务不会监听");
+    }
+    Ok(())
 }
