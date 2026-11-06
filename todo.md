@@ -82,20 +82,12 @@
 
 ### 高优先
 
-- [ ] **`hbbs_http` 收尾清理**（1844 行）
-  现状：rendezvous/自动更新/版本检查都删了，只剩 `hbbs_http`（HTTP 客户端 + Pro 同步 + 插件下载）。它**没有主动拨号**，但仍是“云/Pro”代码。调用点只剩四处：`connection.rs` 的 `sync::signal_receiver()`、`ipc.rs` 的 `is_pro()` 与 `register_switch_grant()`、`common.rs` 的两个 import。
-  从哪儿开始：把这四处去掉（`is_pro()` → 直接当作 false），删模块，跑一遍回归
-- [ ] **CI 做主 crate 完整构建 + 打 tag 出包**
-  现状：CI 只 `cargo check`；发版靠本机 `scripts/dist.sh`。既然 Release 只在**打 tag** 时发，CI 就该在 tag 上产出 `dist/*.zip` 并附到 Release
-  从哪儿开始：在 workflow 里加 vcpkg + libclang 缓存（Windows 上 3–4 分钟），tag 触发时跑 `scripts/dist.sh` 并 `gh release create`
+- [x] **`hbbs_http` 收尾清理**：模块删除（1844 行），通用 HTTP 客户端缩到 114 行（`create_http_client_async` + `get_url_for_tls`，只给 `common::post_request` 用）；Pro 同步、账号 OIDC、录制上传、“Web 控制台踢下线”信号一并消失；flutter-only 的下载器/更新钩子也删了
+- [x] **CI 做主 crate 完整构建 + 打 tag 出包**：`release` 作业在 `v*` tag 上编两个 exe、冒烟后 `dist.sh` 出包并 `gh release create`
 - [ ] **低配被控机画面策略（分辨率降档开关）**
-  现状：1080p + VP9 软编在 4 vCPU VM 上约 10–20 fps；`image_quality=low` 只降码率不降分辨率
-  从哪儿开始：界面里加“请求远端分辨率（1280×720 / 1024×768 / 原分辨率）”，走上游 `Message::Resolution`
+  现状：远程窗口已有 `720p / 1080p / Original` 三个按钮（走上游 `Message::Resolution`），**待真机验证**降分辨率后帧率是否真的改善
 
 - [x] **Win10 那台恢复后补验**：已通过（文件剪贴板与快捷键在两台 VM 上都验过）
-- [ ] **低配被控机上的画面策略**
-  现状：1080p + VP9 软编在 4 vCPU 的 VM 上约 10–20 fps；`image_quality=low` 只降码率不降分辨率。你说过“虚拟机画面不纠结”，所以这条是“要做的话怎么做”
-  从哪开始：评估把“分辨率降档（1280×720）”做成界面开关——它比调画质对帧率有效得多，但会改变被控机显示设置
 
 ### 中优先（补齐能力）
 

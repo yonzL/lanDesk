@@ -125,6 +125,11 @@ impl InvokeUiSession for LandeskUi {
         // 对端下发的权限变化：声音/剪贴板/文件这些直接决定能不能用，记一条便于排查。
         log::info!("landesk: peer permission {name} = {value}");
     }
+    #[cfg(feature = "flutter")]
+    fn is_multi_ui_session(&self) -> bool {
+        // 一个进程只开一个会话窗口（会话多开是“每会话一个进程”），所以不存在多 UI 共用。
+        false
+    }
     fn close_success(&self) {}
     fn update_quality_status(&self, _qs: QualityStatus) {}
     fn set_connection_type(&self, _is_secured: bool, _direct: bool, _stream_type: &str) {}
@@ -157,11 +162,16 @@ impl InvokeUiSession for LandeskUi {
         });
     }
     fn confirm_delete_files(&self, id: i32, _i: i32, name: String) {
-        use crate::client::file_trait::FileManager;
         // 无人值守的文件会话：删除前不再弹窗，记一行日志即可。
         self.note(format!("删除已确认：{name}"));
-        if let Some(session) = self.session.lock().unwrap().as_ref() {
-            session.confirm_delete_files(id, 0);
+        // `FileManager::confirm_delete_files` 在 flutter/移动端不存在（那边的文件管理器在 UI 层），
+        // 所以这里按同样的条件门控，避免 `--features flutter` 下编译失败。
+        #[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
+        {
+            use crate::client::file_trait::FileManager;
+            if let Some(session) = self.session.lock().unwrap().as_ref() {
+                session.confirm_delete_files(id, 0);
+            }
         }
     }
     fn override_file_confirm(
@@ -172,11 +182,14 @@ impl InvokeUiSession for LandeskUi {
         is_upload: bool,
         _is_identical: bool,
     ) {
-        use crate::client::file_trait::FileManager;
         // 重部署时目标目录里通常已经有同名文件；无人值守的会话直接覆盖（并记住这个选择）。
         self.note(format!("覆盖已存在的文件：{to}"));
-        if let Some(session) = self.session.lock().unwrap().as_ref() {
-            session.set_confirm_override_file(id, file_num, true, true, is_upload);
+        #[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
+        {
+            use crate::client::file_trait::FileManager;
+            if let Some(session) = self.session.lock().unwrap().as_ref() {
+                session.set_confirm_override_file(id, file_num, true, true, is_upload);
+            }
         }
     }
     fn update_block_input_state(&self, _on: bool) {}

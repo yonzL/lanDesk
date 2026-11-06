@@ -69,3 +69,27 @@
 ## 5. 结论（待填）
 
 （本条由执行后补写：能做到哪一步、卡在哪、下一步具体命令）
+
+## 6. 实测结论（本机，2026-11）
+
+| 步骤 | 结果 |
+|---|---|
+| `cargo install flutter_rust_bridge_codegen --version 1.80.1 --locked` | ✅ 72 秒装好（USTC 镜像）；AGENTS.md 里"版本难配"的结论在我们这套环境不成立 |
+| 解包 Flutter SDK | ✅ `D:\dev_ai\_tools\_flutter_extract\flutter`；`flutter --version` → **Flutter 3.47.9 / Dart 3.13.7** |
+| codegen 解析 `src/flutter_ffi.rs` | ✅ 生成 `src/bridge_generated.rs` + `.io.rs` |
+| codegen 的 **ffigen** 步骤 | ❌ 失败且无输出（需要 Dart 侧的 ffigen 包，pub 访问在本机不通） |
+
+所以 `--features flutter` 现在剩下的闸门是 **ffigen**（Dart 侧 C 头生成），与我们的源码无关。
+
+把守方式（不依赖 codegen）：默认构建 `cargo check`、`session_smoke` 五个测试、冒烟四条路径；flutter-only 文件的语法用
+`rustfmt --edition 2021 --check src/flutter_ffi.rs src/ui_interface.rs` 检查（它会解析文件，语法坏块会报错）。
+
+做 Flutter 时的下一步：
+
+1. 配 `PUB_HOSTED_URL=https://pub.flutter-io.cn` 或可用代理，让 ffigen 能 `dart pub get`；
+2. 重跑 `flutter_rust_bridge_codegen`，确认生成物完整（"DUMMY CODE FOR BINDGEN" 块必须是注释）；
+3. 再谈第 2 节的 FFI 面与地址簿页替换。
+
+另外：这一轮清掉了一个隐形隐患——`flutter_ffi.rs` / `ui_interface.rs` 里**只在 `--features flutter` 下编译**的代码，
+长期带着指向已删模块的引用（`hbbs_http::account`、`hbbs_http::downloader`），默认构建永远看不见。
+这些云钩子现在已删，`--features flutter` 不会再报 E0433。

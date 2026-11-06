@@ -116,10 +116,10 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 移除（**已落地**，2026-11）：
 
-- `rendezvous_mediator.rs`（1844 行）、`hbbs_http/`（1844 行）、`updater.rs` + `updater/` + `manual_update.rs`（846 行）——ID 注册、打洞、中继、服务器 API、自动更新，全部已从树中删除。
+- `rendezvous_mediator.rs`（1844 行）、`hbbs_http/`（1844 行，其中有 114 行的通用 HTTP 客户端搬到 `src/http_client.rs` 保留）、`updater.rs` + `updater/` + `manual_update.rs`（846 行）——ID 注册、打洞、中继、服务器 API、自动更新，全部已从树中删除。
 - 客户端的直连 IP / 域名 / rendezvous 回退路径：`Client::start` 现在只接受会话层登记过的目标，其余直接报错。
 - 启动时的 `api.rustdesk.com` 版本检查（`check_software_update` 及响应解析）。
-- 仍然保留但**不可达**的部分：`flutter_ffi.rs` 里 6 处更新调用与 `ui_interface.rs` 的 OIDC 登录——它们只在 `--features flutter` 下编译，等 Flutter 那一步一并清理。
+- flutter-only 的云钩子也一并删了：`flutter_ffi.rs` 的下载器/更新 FFI 与 `ui_interface.rs` 的 OIDC 登录（`account_auth*`）。`--features flutter` 现在不会再引用已删模块。
 
 拟删（未做）：
 
