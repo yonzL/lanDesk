@@ -60,6 +60,20 @@ bash scripts/dist.sh                            # 打一个可拷给别人的包
 
 CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 crate 的闸门要等裁剪到仅剩 Service 目标后再加。
 
+### Windows 构建工具（比网络更容易踩）
+
+两个与代码无关、但会让人卡一天的环境事实：
+
+1. **需要 Visual Studio 的 “使用 C++ 的桌面开发” 工作负载。** 只有 `VCToolsMSVC` 目录不够：
+   `VCAuxiliaryBuildvcvars64.bat` 与 CMake 都来自这个工作负载。缺了它时 `cc-rs` 的构建脚本会报
+   `Failed to find tool. Is cl.exe installed?`，链接期报 `LNK1181: cannot open input file 'kernel32.lib'`，
+   而 `flutter build windows` 会报 `Unable to find suitable Visual Studio toolchain`。
+2. **Git Bash 的 `link.exe` 会抢在 MSVC 的 linker 前面。** `C:Program FilesGitSrinink.exe`
+   是 coreutils 的 `link`，被 rustc 当成链接器调用时报 `link: extra operand`。把 MSVC 的
+   `…VCToolsMSVC<ver>inHostx64d` 放到 PATH 最前面，或在 vcvars 环境里构建。
+
+另外主 crate 的首次构建会用到 `VCPKG_ROOT` 与 `LIBCLANG_PATH`（见下）。
+
 ### 大陆网络下的前置条件
 
 依赖图里有三类在大陆直连不通的来源：crates.io、GitHub 上的 git 源、以及 `*.googlesource.com`
