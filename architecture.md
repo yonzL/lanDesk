@@ -157,7 +157,10 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 **两个外壳，一套后端。**
 
 * 现在交付的是 `landesk-client`（独立 crate、`eframe`/egui、glow 后端、纯 Rust）：按组/子组展示地址簿、双击开一个会话窗口、把人能看懂的结果写在底部日志。
-* **正式版的方向是 Flutter**（上游 `flutter/`）：先决条件已打通——codegen（含 ffigen）可用、`cargo check --features flutter` 通过、`flutter analyze lib` 0 error。剩下的只是把 Dart 页面接到 landesk 的接口上，见 `docs/flutter-path.md`。
+* **正式版的方向是 Flutter**（上游 `flutter/`）：工具链已打通，主界面已经换成读本机地址簿的页面
+  （`flutter/lib/landesk/address_book_page.dart` → `bind.landeskBookList()` 等，接线见 `docs/flutter-path.md` 第 12 节）。
+  Flutter 自己的远程会话窗口还要复用上游的 `desktop_multi_window` 链路；在那之前双击落到同目录的 `landesk-client.exe`。
+  两个壳共用同一套后端与 `src/landesk/ffi.rs` 边界——换壳不动后端。
 
 界面与后端的分工是稳定的：landesk 已经把界面需要的东西集中暴露在 `src/landesk/ffi.rs`（`book_list` / `book_upsert` / `book_remove` / `book_verify` / `identity_list` / `listen_status` / `open_remote_window`），`flutter_ffi.rs` 只有一层同名薄封装。**换 UI 不动后端。**
 
