@@ -135,7 +135,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 | `arbiter` | **不采用**：并发时不做事后仲裁，与上游一致（见“并发连接”一节）。 | — |
 | `transport` | 直连监听：固定端口接受连接，交给会话层 | `src/transport.rs` |
 | `landesk` | Service 侧配置（监听端口、绑定公钥）与鉴权执行点 | `src/landesk.rs` |
-| `addressbook` | 两级组、条目（地址:端口）、指纹、CSV 导入（按「地址:端口」upsert，一个事务内）。 | 未开始 |
+| `addressbook` | 两级组、条目（地址:端口）、指纹、CSV 导入导出（按「地址:端口」覆盖式合并；解析全成功才落盘）。 | `src/addressbook.rs` |
 | `svcsetup` | 安装期：注册 Windows 服务、写入绑定公钥与端口、启动。 | 未开始 |
 
 ### 落地形态（Service 侧）
@@ -159,7 +159,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 它取代了早先“裁剪上游 Flutter 界面”的打算，原因有三：Flutter 的 Dart 改造量远大于这个窗口；这台开发机上没有 Flutter 工具链（SDK 在下载中，不阻塞）；一个 300 行的窗口能直接编译、直接跑，符合“简单、可知”。上游 `flutter/` 仍留在树里，将来若要做主控端界面或移动端，它仍在原处。
 
 两个已知取舍：wgpu 后端与主 crate 锁定的旧 `windows` crate 撞版本，所以固定走 glow；`eframe` 固定 0.31（0.37 的 `App` trait 与面板 API 已变）。
-- 地址簿：`addressbook.json` 在可执行文件同目录（`--landesk-book` 可改），条目为 `组/子组/显示名/地址:端口`，指纹库内嵌在同一份文件里；导入导出就是整份文件的进出。
+- 地址簿：`addressbook.json` 在可执行文件同目录（`--landesk-book` 可改），条目为 `组/子组/显示名/地址:端口/身份`，指纹库内嵌在同一份文件里。CSV 不是“整份替换”：导入按 `地址:端口` **覆盖式合并**（同址覆盖、其余保留），且全部行解析成功才落盘；导出写 `组,子组,显示名,地址,身份`，与自己的解析器对称（`#` 开头的值加引号、换行转空格、表头去 BOM）。
 - 私钥：`private.key` 在可执行文件同目录（`--landesk-key` 可改），保护靠文件系统 ACL——与 Veyon 同一路子（它用 `keys/public` 与 `keys/private` 两个目录、每个密钥一个子目录，就为了能分别设权限）；DPAPI 是可选的加固，不是缺口。
 
 
