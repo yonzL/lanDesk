@@ -673,25 +673,9 @@ fn build_session(
     *session.server_keyboard_enabled.write().unwrap() = true;
     *session.server_file_transfer_enabled.write().unwrap() = true;
     *session.server_clipboard_enabled.write().unwrap() = true;
-    // 编码器默认值必须写进**这个 peer 的 PeerConfig**：登录消息里的 `prefer` 来自
-    // `Decoder::preference(id)` → `PeerConfig::load(id)`，而此时 `LoginConfigHandler` 还没
-    // initialize（id 为空），在 session 上 `set_option` 落不到对端那份配置里。
-    // 上游 `auto` 会挑 AV1——软编最慢的一个，我们的目标机器（VM/老机器）扛不住，
-    // 所以把 `auto` 也当作“未选择”，默认给 vp9；想要别的在界面里显式选。
-    {
-        use hbb_common::config::PeerConfig;
-        let mut config = PeerConfig::load(peer);
-        if config
-            .options
-            .get("codec-preference")
-            .map_or(true, |v| v.is_empty() || v == "auto")
-        {
-            config
-                .options
-                .insert("codec-preference".to_owned(), "vp9".to_owned());
-            config.store(peer);
-        }
-    }
+    // 编码器偏好**不在这里动**：界面上的 `auto` 就是上游的 `auto`，由服务端按它的规则挑。
+    // 我们要解决的只是“auto 会选 AV1”——那在服务端侧关掉（`landesk::apply_service_defaults`
+    // 把 `av1-test` 置为 N），于是 auto 落到 VP9，而总内存 ≤4GB 时上游仍会改选 VP8。
     session
 }
 

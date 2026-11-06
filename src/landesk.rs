@@ -1382,3 +1382,20 @@ pub fn run_host_key_command(config: &LandeskConfig) -> ResultType<()> {
     }
     Ok(())
 }
+
+/// 服务端的编码器默认值：关掉上游 `auto` 里的 AV1 候选。
+///
+/// 上游 `auto_codec`（`libs/scrap/src/common/codec.rs:270`）的顺序是 h265 > h264 > av1 > vp9，
+/// 最后一步还有"总内存 ≤4GB 时改选 VP8"。AV1 软编在 VM/老机器上慢到不可用，所以在 landesk 模式
+/// 把 `av1-test` 置为 "N"：auto 于是落到 VP9，而 ≤4GB 的机器**仍然**会被上游改选 VP8 ——
+/// 比在客户端强行覆盖成 vp9 更贴近上游、也不会让界面上的 `auto` 变成空档。
+///
+/// 只在用户没显式设过时写一次（空值才算没设）。
+pub fn apply_service_defaults() {
+    use base::config::keys::OPTION_AV1_TEST;
+    let config = hbb_common::config::Config::get_option(OPTION_AV1_TEST);
+    if config.is_empty() {
+        hbb_common::config::Config::set_option(OPTION_AV1_TEST.to_owned(), "N".to_owned());
+        log::info!("landesk: av1-test=N so that auto picks vp9 (or vp8 on <=4GB hosts)");
+    }
+}

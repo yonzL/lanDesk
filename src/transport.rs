@@ -19,6 +19,8 @@ const DIAL_TIMEOUT_MS: u64 = 5_000;
 /// 上游靠一条永不返回的循环维持 `--server` 进程存活；这里由这个循环接管，
 /// 单个监听失败不再等于这台机器失联到下次重启。
 pub async fn supervise() -> ResultType<()> {
+    // 服务端默认值先落地（例如关掉 auto 里的 AV1），再开始监听。
+    crate::landesk::apply_service_defaults();
     let server = crate::server::new();
     loop {
         let Some(spec) = crate::landesk::reload_listen_spec() else {
