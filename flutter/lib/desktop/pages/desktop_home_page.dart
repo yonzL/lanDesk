@@ -81,7 +81,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     final isLandeskBuild = bind.landeskBuild();
     final children = <Widget>[
       if (!isOutgoingOnly) buildPresetPasswordWarning(),
-      if (bind.isCustomClient())
+      if (bind.isCustomClient() && !bind.landeskBuild())
         Align(
           alignment: Alignment.center,
           child: loadPowered(context),
@@ -473,7 +473,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       return buildInstallCard("", systemError, "", () {});
     }
 
-    if (isWindows && !bind.isDisableInstallation()) {
+    // 这张卡是“本机还没装成服务，被控时会受限”的提醒。lanDesk 的 Master 只拨出去，
+    // 被控能力与本机是否安装无关，提示在这里既没用又会让人以为必须先点它。
+    if (isWindows && !bind.isDisableInstallation() && !bind.landeskBuild()) {
       if (!bind.mainIsInstalled()) {
         return buildInstallCard(
             "", bind.isOutgoingOnly() ? "" : "install_tip", "Install",
