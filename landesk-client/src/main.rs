@@ -26,15 +26,32 @@ fn main() -> eframe::Result<()> {
     hbb_common::init_log(false, "client");
     paste_watcher::spawn();
     let dir = exe_dir();
-    let app = App::new(dir.join("addressbook.json"), dir.join("private.key"));
+    // QQ 形态：主窗口是地址簿；每个远程会话是一个**独立进程的窗口**
+    // （`--landesk-remote <addr:port>`），与上游 RustDesk 的 `--connect` 一个思路。
+    let mut args = std::env::args().skip(1);
+    let mut remote_addr = None;
+    while let Some(arg) = args.next() {
+        if arg == "--landesk-remote" {
+            remote_addr = args.next();
+        }
+    }
+    let title = match &remote_addr {
+        Some(addr) => format!("lanDesk — {addr}"),
+        None => "lanDesk".to_owned(),
+    };
+    let app = App::new(
+        dir.join("addressbook.json"),
+        dir.join("private.key"),
+        remote_addr,
+    );
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 680.0])
-            .with_title("lanDesk"),
+            .with_title(&title),
         ..Default::default()
     };
     eframe::run_native(
-        "lanDesk",
+        &title,
         options,
         Box::new(|cc| {
             install_cjk_font(&cc.egui_ctx);
@@ -73,6 +90,9 @@ fn install_cjk_font(ctx: &egui::Context) {
 }
 
 struct App {
+    /// `Some(addr)` = 这个进程是一个独立的远程会话窗口（QQ 形态里的“聊天窗口”）；
+    /// `None` = 主窗口（地址簿）。
+    remote_addr: Option<String>,
     book_path: PathBuf,
     key_path: PathBuf,
     book: AddressBook,
@@ -106,8 +126,9 @@ struct App {
 }
 
 impl App {
-    fn new(book_path: PathBuf, key_path: PathBuf) -> Self {
+    fn new(book_path: PathBuf, key_path: PathBuf, remote_addr: Option<String>) -> Self {
         let mut app = Self {
+            remote_addr,
             book_path,
             key_path,
             book: AddressBook::default(),
@@ -134,6 +155,10 @@ impl App {
             last_frame_at: None,
         };
         app.reload();
+        // 远程窗口模式：进程起来就直接连，不需要用户在子窗口里再点一次。
+        if let Some(addr) = app.remote_addr.clone() {
+            app.connect(addr, true);
+        }
         app
     }
 
@@ -200,7 +225,12 @@ impl App {
                 paste_watcher::set(Some(session.clone()));
                 self.session = Some(session);
                 self.session_peer = Some(addr.clone());
-                self.selected = Some(addr);
+                self.selected = Some(addr.clone());
+                // 主窗口靠这个字段显示“最近连接”；写回地址簿，主窗口会自动重读。
+                self.book.note_connected(&addr);
+                if let Err(err) = self.book.save(&self.book_path) {
+                    self.log.push(format!("Saving the address book failed: {err:#}"));
+                }
             }
             Err(err) => self.log.push(format!("Connect failed: {err:#}")),
         }
@@ -768,26 +798,42 @@ fn control_key_of(key: egui::Key) -> Option<ControlKey> {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_frames(ctx);
+        // 远程窗口模式：只有会话界面，没有地址簿。
+        let remote = self.remote_addr.is_some();
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.heading("lanDesk");
-                ui.separator();
-                ui.selectable_value(&mut self.show_distribute, false, "Screen");
-                ui.selectable_value(&mut self.show_distribute, true, "File push");
-                ui.separator();
-                if ui.button("Reload address book").clicked() {
-                    self.reload();
-                }
-                if let Some(peer) = &self.session_peer {
+                if remote {
+                    ui.heading(
+                        self.remote_addr
+                            .clone()
+                            .unwrap_or_else(|| "lanDesk".to_owned()),
+                    );
                     ui.separator();
-                    ui.label(format!("Connected: {peer}"));
+                    if let Some(peer) = &self.session_peer {
+                        let (state, _) = self.pin_state(peer);
+                        ui.label(format!("Host: {state}"));
+                    }
                     if ui.button("Disconnect").clicked() {
                         self.disconnect();
                     }
+                    if ui.button("Fullscreen").clicked() {
+                        let now = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!now));
+                    }
+                } else {
+                    ui.heading("lanDesk");
+                    ui.separator();
+                    if ui.button("Reload address book").clicked() {
+                        self.reload();
+                    }
+                    ui.separator();
+                    ui.selectable_value(&mut self.show_distribute, false, "Address book");
+                    ui.selectable_value(&mut self.show_distribute, true, "File push");
+                    ui.separator();
+                    ui.label(format!("Book: {}", self.book_path.display()));
                 }
-                ui.label(format!("Address book: {}", self.book_path.display()));
             });
             if let Some(err) = &self.load_error {
                 ui.colored_label(egui::Color32::RED, format!("Reading the address book failed: {err}"));
@@ -795,6 +841,7 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
+        if !remote {
         egui::SidePanel::left("tree")
             .resizable(true)
             .default_width(280.0)
@@ -832,6 +879,17 @@ impl eframe::App for App {
                                                 } else {
                                                     format!("{}  ({})", entry.name, entry.addr)
                                                 };
+                                                // 没 presence（无 rendezvous）就不假装在线：
+                                                // 只如实显示指纹是否已核对 + 最近一次成功连接。
+                                                let status = match self.book.pins().get(&entry.addr) {
+                                                    Some(host) if host.verified => "✓".to_owned(),
+                                                    Some(_) => "?".to_owned(),
+                                                    None => "·".to_owned(),
+                                                };
+                                                let when = match entry.last_connected {
+                                                    Some(ts) => format!("last {}", short_ago(ts)),
+                                                    None => "never".to_owned(),
+                                                };
                                                 ui.horizontal(|ui| {
                                                     let mut is_target =
                                                         self.targets.contains(&entry.addr);
@@ -848,12 +906,18 @@ impl eframe::App for App {
                                                     }
                                                     let selected = self.selected.as_deref()
                                                         == Some(&entry.addr);
-                                                    if ui
+                                                    let response = ui
                                                         .selectable_label(selected, label)
-                                                        .clicked()
-                                                    {
+                                                        .on_hover_text(format!("{status}  {when}"));
+                                                    if response.clicked() {
                                                         self.selected = Some(entry.addr.clone());
                                                     }
+                                                    // QQ 习惯：双击直接开会话窗口。
+                                                    if response.double_clicked() {
+                                                        self.selected = Some(entry.addr.clone());
+                                                        open_remote_window(&entry.addr);
+                                                    }
+                                                    ui.small(format!("{status} {when}"));
                                                 });
                                             }
                                         });
@@ -862,6 +926,7 @@ impl eframe::App for App {
                     }
                 });
             });
+        }
 
         egui::TopBottomPanel::bottom("log").show(ctx, |ui| {
             ui.add_space(2.0);
@@ -1101,19 +1166,13 @@ impl eframe::App for App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .button("Connect (take control)")
-                    .on_hover_text("Verify the host, prove with your key, then open the session")
+                    .button("Open remote window")
+                    .on_hover_text("Opens a separate window; closing it disconnects")
                     .clicked()
                 {
-                    self.connect(addr.clone(), true);
+                    open_remote_window(&addr);
                 }
-                if ui
-                    .button("View only")
-                    .on_hover_text("Same identity check, but declares it sends no input")
-                    .clicked()
-                {
-                    self.connect(addr.clone(), false);
-                }
+        
                 if can_verify && ui.button("I checked it, mark verified").clicked() {
                     self.mark_verified(&addr);
                 }
@@ -1210,5 +1269,45 @@ mod paste_watcher {
         unsafe {
             IsClipboardFormatAvailable(CF_HDROP) != 0 && IsClipboardFormatAvailable(CF_UNICODETEXT) == 0
         }
+    }
+}
+
+/// 打开一个独立的远程会话窗口：另起一个本程序的进程（`--landesk-remote <addr>`）。
+///
+/// 与上游 RustDesk 的“每个会话一个进程”同形：窗口关掉就等于断开会话，
+/// 一个窗口崩溃不影响其它窗口，剪贴板/输入法也天然按窗口隔离。
+fn open_remote_window(addr: &str) {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            hbb_common::log::error!("landesk: cannot find our own exe: {err}");
+            return;
+        }
+    };
+    match std::process::Command::new(exe)
+        .arg("--landesk-remote")
+        .arg(addr)
+        .spawn()
+    {
+        Ok(_) => hbb_common::log::info!("landesk: opened a remote window for {addr}"),
+        Err(err) => hbb_common::log::error!("landesk: cannot open a remote window for {addr}: {err}"),
+    }
+}
+
+/// “最近连接”的人话版本（主窗口那一列用）。
+fn short_ago(ts: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let secs = (now - ts).max(0);
+    if secs < 60 {
+        "just now".to_owned()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
     }
 }

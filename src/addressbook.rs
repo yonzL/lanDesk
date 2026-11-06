@@ -24,6 +24,9 @@ pub struct Entry {
     /// 连这台机器时用哪把 client 私钥（身份名或路径）；`None` 表示用默认身份。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// 最近一次成功连上的 unix 时间戳（秒）；主窗口用它显示“最近连接”。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_connected: Option<i64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -95,6 +98,17 @@ impl AddressBook {
         match self.entries.iter_mut().find(|e| e.addr == entry.addr) {
             Some(existing) => *existing = entry,
             None => self.entries.push(entry),
+        }
+    }
+
+    /// 记一次成功连接（主窗口据此显示“最近连接”）。
+    pub fn note_connected(&mut self, addr: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.addr == addr) {
+            entry.last_connected = Some(now);
         }
     }
 
@@ -260,6 +274,7 @@ fn parse_csv_entries(text: &str) -> ResultType<Vec<Entry>> {
             name: pick(row, name_column),
             addr,
             key: if key.is_empty() { None } else { Some(key) },
+            last_connected: None,
         });
     }
     Ok(entries)
@@ -283,6 +298,7 @@ mod tests {
             name: name.into(),
             addr: addr.into(),
             key: None,
+            last_connected: None,
         }
     }
 
@@ -347,6 +363,7 @@ mod tests {
             name: "工位-01".into(),
             addr: "10.0.0.5:21118".into(),
             key: None,
+            last_connected: None,
         });
         let csv = book.to_csv();
         let mut imported = AddressBook::default();
@@ -439,6 +456,7 @@ mod identity_tests {
             name: "n".into(),
             addr: addr.into(),
             key: key.map(|k| k.to_owned()),
+            last_connected: None,
         }
     }
 
