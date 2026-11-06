@@ -423,6 +423,10 @@ impl App {
         let size = egui::vec2(rw * scale, rh * scale);
         let (rect, response) =
             ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        // 点画面就把焦点抢回来：否则侧边栏里编辑过的文本框仍持有焦点，键盘输入会进那个框、不会转发到远端。
+        if response.clicked() || response.drag_started() {
+            response.request_focus();
+        }
         ui.painter().image(
             texture.id(),
             rect,
