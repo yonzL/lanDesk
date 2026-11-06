@@ -66,9 +66,6 @@
 - `cargo install flutter_rust_bridge_codegen --version 1.80.1` 是否可装：见第 5 节结论
 - `flutter.zip` 解包与 `flutter --version`：见第 5 节结论
 
-## 5. 结论（待填）
-
-（本条由执行后补写：能做到哪一步、卡在哪、下一步具体命令）
 
 ## 6. 实测结论（本机，2026-11）
 
