@@ -3010,3 +3010,40 @@ pub mod server_side {
         jboolean::from(crate::server::is_clipboard_service_ok())
     }
 }
+
+// ---- landesk：给 Flutter 侧的薄封装（逻辑在 src/landesk/ffi.rs，默认构建里可测） ----
+
+pub fn landesk_book_list() -> String {
+    crate::landesk::ffi::book_list()
+}
+
+pub fn landesk_book_upsert(
+    group: String,
+    subgroup: String,
+    name: String,
+    addr: String,
+    key: String,
+) -> String {
+    crate::landesk::ffi::book_upsert(&group, &subgroup, &name, &addr, &key)
+}
+
+pub fn landesk_book_remove(addr: String) -> String {
+    crate::landesk::ffi::book_remove(&addr)
+}
+
+pub fn landesk_book_verify(addr: String) -> String {
+    crate::landesk::ffi::book_verify(&addr)
+}
+
+pub fn landesk_identity_list() -> String {
+    crate::landesk::ffi::identity_list()
+}
+
+pub fn landesk_listen_status() -> String {
+    crate::landesk::ffi::listen_status()
+}
+
+/// 开会话窗口：起一个 `--landesk-remote <addr>` 子进程（一个会话一个进程）。
+pub fn landesk_open_remote_window(addr: String) -> String {
+    crate::landesk::ffi::open_remote_window(&addr)
+}

@@ -111,13 +111,14 @@
    ```
 3. `cargo check -p rustdesk --lib --features flutter` → **通过**（只有上游 warning）。这是本项目第一次让 flutter 特性参与编译。
 
-### 仍然挡在面前的三件事（都不是 codegen）
+### 之后剩下的（都不是 codegen）
 
-| 阻碍 | 说明 |
+| 阻碍 | 状态 |
 |---|---|
-| **Flutter SDK 版本** | 本机解包的是 **3.47.9 / Dart 3.13.7**，而上游这条分支按 3.24.5/Dart 3.5 写。`flutter analyze` 的 13 个 error 里有 9 个是 API 改名（`DialogTheme` → `DialogThemeData`、`TabBarTheme` → `TabBarThemeData`，见 `lib/common.dart:382/413/480/514`）。要么换 SDK 版本，要么改这几处调用 |
-| **登录/账号页要删** | 另外 3–4 个 error 是 `mainAccountAuthCancel` / `mainAccountAuth` 未定义——因为我们已经从 Rust 侧删掉了云账号 FFI。landesk 没有账号体系，`lib/common/widgets/login.dart` 这套页面本来就要被地址簿取代 |
-| **Developer Mode** | `flutter pub get` 提示 "Building with plugins requires symlink support"，需要机器上开启开发者模式（`start ms-settings:developers`），否则带插件的构建会失败 |
+| SDK 版本 | ✅ 已按最新 Flutter（3.47.9）适配：`DialogTheme`/`TabBarTheme` → `...ThemeData`，4 处 |
+| 登录/账号页 | ✅ 已删（`login.dart` 及 5 个使用点），`flutter analyze lib` 0 error |
+| Developer Mode | ✅ 已开启；`flutter build windows` 已经越过这一步 |
+| **VS “使用 C++ 的桌面开发” 工作负载** | ❌ 缺这个：`vcvars64.bat` 与 CMake 都没有，因此 `flutter build windows` 报 `Unable to find suitable Visual Studio toolchain`，Rust 侧的 C 依赖（`kcp-sys`/`ring`/`scrap`）也编不了 |
 
 ## 8. 推进：改到最新 Flutter（3.47.9）
 
@@ -159,3 +160,32 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_D
 
 （同一次构建还会刷一堆 `file_picker` 的 "references file_picker:windows as the default plugin"
 告警——那是它新版联邦插件布局的自引用提示，属噪音，与失败无关。）
+
+## 9. FFI 面已就位（阶段 B 的后端部分）
+
+界面需要的东西集中在 `src/landesk/ffi.rs`（**默认构建**里，可被 `cargo check`/测试覆盖），
+`flutter_ffi.rs` 只有同名薄封装：
+
+| 函数 | 返回 |
+|---|---|
+| `book_list()` | 地址簿 JSON 数组：`group/subgroup/name/addr/key/pin(verified\|unverified\|never)/fingerprint` |
+| `book_upsert(group, subgroup, name, addr, key)` | 空串 = 成功；`error:…` = 失败（地址必须带端口） |
+| `book_remove(addr)` / `book_verify(addr)` | 同上；删除会连指纹一起丢掉 |
+| `identity_list()` | 可用身份 JSON 数组：`{name, path, public}` |
+| `listen_status()` | `landesk-status.json` 的内容（没有则 `null`） |
+| `open_remote_window(addr)` | 起一个 `--landesk-remote <addr>` 子进程；一个会话一个进程 |
+
+**会话不在界面进程里开**，所以 Flutter 不需要接 `sessions` 注册表——它只需要调 `open_remote_window`，
+和现在 eframe 的做法完全一致（这也是"每会话一个进程"决定的直接好处）。
+
+剩下的 Dart 侧工作只剩页面：用 `book_list` 替换 `my_group.dart` / `address_book.dart` 的列表，
+双击调 `open_remote_window`，设置页加一个"身份"区块（`identity_list` / import / forget）。
+
+## 10. 陷阱：`pub get` 会改写两个文件
+
+跟上面这些步骤跑一遍后，`flutter/` 里会有两个**本机工具链产生**的改动，不要当成分支决定提交：
+
+- `flutter/pubspec.lock`：3.47 的解析结果（`analyzer` 6.7.0 → 6.4.1，去掉 `_macros`）；
+- `flutter/analysis_options.yaml`：被注入 `analyzer: exclude:`（`build/**`、各平台目录）。
+
+上一轮就是它们混进了文档提交，`e67e96a` 把它们回滚掉的。跑完 `pub get` 后先 `git checkout` 这两个文件。

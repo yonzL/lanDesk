@@ -112,7 +112,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 - `client.rs` + `client/`（io_loop、文件、截图）、`server.rs` + `server/`（video / input / clipboard / display / connection）——会话两侧的本体。
 - `ipc/`、`service.rs`、`platform/windows`——Windows 服务与活动会话进程之间的桥，含 SYSTEM 桌面访问。
 - `libs/scrap`、`libs/enigo`、`libs/clipboard`、`libs/hbb_common`——采集、注入、剪贴板、协议与密码学原语。
-- `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——上游的 Master 界面。**landesk 不用它**：见下方“Master 界面”一节。
+- `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——上游的 Master 界面。**正式版的界面方向就是它**（先决条件已在 `docs/flutter-path.md` 中实测打通）；当前仍由 eframe 的 `landesk-client` 交付，见下方“Master 界面”。
 
 移除（**已落地**，2026-11）：
 
@@ -154,9 +154,14 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 ### Master 界面
 
-`landesk-client`：一个独立的小 crate（`eframe`/egui，glow 后端，纯 Rust），只做三件事——按组/子组展示地址簿、对选中的机器拨号、把人能看懂的结果写在底部一行日志。
+**两个外壳，一套后端。**
 
-它取代了早先“裁剪上游 Flutter 界面”的打算，原因有三：Flutter 的 Dart 改造量远大于这个窗口；这台开发机上没有 Flutter 工具链（SDK 在下载中，不阻塞）；一个 300 行的窗口能直接编译、直接跑，符合“简单、可知”。上游 `flutter/` 仍留在树里，将来若要做主控端界面或移动端，它仍在原处。
+* 现在交付的是 `landesk-client`（独立 crate、`eframe`/egui、glow 后端、纯 Rust）：按组/子组展示地址簿、双击开一个会话窗口、把人能看懂的结果写在底部日志。
+* **正式版的方向是 Flutter**（上游 `flutter/`）：先决条件已打通——codegen（含 ffigen）可用、`cargo check --features flutter` 通过、`flutter analyze lib` 0 error。剩下的只是把 Dart 页面接到 landesk 的接口上，见 `docs/flutter-path.md`。
+
+界面与后端的分工是稳定的：landesk 已经把界面需要的东西集中暴露在 `src/landesk/ffi.rs`（`book_list` / `book_upsert` / `book_remove` / `book_verify` / `identity_list` / `listen_status` / `open_remote_window`），`flutter_ffi.rs` 只有一层同名薄封装。**换 UI 不动后端。**
+
+**一个会话一个进程**：界面不自己跑会话，调用 `open_remote_window(addr)` 起一个 `--landesk-remote <addr>` 子进程。崩溃隔离、输入法/剪贴板天然按窗口隔离，关窗口即断会话。十几个窗口并存时，后台窗口会被降级（`landesk::priority`：进程优先级 `BELOW_NORMAL` + 请求帧率 5 fps + 重绘 5Hz），前台保持 `NORMAL` 与界面帧率上限。
 
 两个已知取舍：wgpu 后端与主 crate 锁定的旧 `windows` crate 撞版本，所以固定走 glow；`eframe` 固定 0.31（0.37 的 `App` trait 与面板 API 已变）。
 - 地址簿：`addressbook.json` 在可执行文件同目录（`--landesk-book` 可改），条目为 `组/子组/显示名/地址:端口/身份`，指纹库内嵌在同一份文件里。CSV 不是“整份替换”：导入按 `地址:端口` **覆盖式合并**（同址覆盖、其余保留），且全部行解析成功才落盘；导出写 `组,子组,显示名,地址,身份`，与自己的解析器对称（`#` 开头的值加引号、换行转空格、表头去 BOM）。

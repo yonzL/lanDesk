@@ -7,6 +7,7 @@
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod cm;
+pub mod ffi;
 pub mod net;
 pub mod priority;
 pub mod session;
