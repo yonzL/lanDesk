@@ -270,11 +270,22 @@ message AuthNonce {
 message AuthProof {
   bytes signature = 1;
   bool control = 2;
+  // landesk: the Master's own signing public key. It is public data and does not weaken the
+  // proof (the Service still verifies the signature), but it lets the Service name the identity
+  // it is rejecting instead of only saying "some signature did not match". Empty means an older
+  // Master that did not send it; the Service then tries every bound key.
+  bytes client_pk = 3;
 }
 
 // landesk: the Service's acceptance. Without it the Master cannot tell its proof from a dropped
 // connection, and would report success to a session the Service already refused.
 message AuthOk {}
+
+// landesk: why the Service refused. Sent before the connection is dropped so the operator at the
+// keyboard sees the actual reason instead of "the connection went away".
+message AuthErr {
+  string reason = 1;
+}
 
 message HealthCheck {
   string token = 1;
@@ -335,5 +346,6 @@ message RendezvousMessage {
     AuthNonce auth_nonce = 30;
     AuthProof auth_proof = 31;
     AuthOk auth_ok = 32;
+    AuthErr auth_err = 33;
   }
 }

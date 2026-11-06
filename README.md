@@ -124,12 +124,19 @@ landesk-server.exe --landesk-doctor
 
 只读，不改任何东西；它会一行行告诉你：配置文件在不在、监听端口、绑没绑公钥、本机主机指纹、端口能不能绑，以及还需要人工做的两件事（防火墙、装成服务）。
 
-**被拒时看什么：** Service 日志里恰好一行，Master 侧同一句话回显。
+**被拒时看什么：** Service 日志里一行（带节流），Master 侧会拿到同样的原因。
+
+Service 侧长这样，直接给出“对方是谁、本机允许谁”：
+
+```
+landesk: reject key-not-allowed from 192.168.99.23:51834 — presented key B651-2E03-D638-84FA-3271-9151-C65-8AF9; bound 1: 5162-339A-F41B-64E5-85A2-2A1E-20E7-78B2
+```
 
 | 日志里的原因 | 含义 |
 |---|---|
-| `no-bound-key` | Service 启动时没给 `--landesk-auth-key` |
-| `bad-signature` | 你的私钥与 Service 绑定的公钥不配对 |
+| `no-bound-key` | Service 还没绑定任何公钥——先 `--landesk-allow-client` 或用公钥目录 |
+| `key-not-allowed` | 对方声明的身份不在这台 Service 的允许集合里（`presented key` 就是它） |
+| `bad-signature` | 公钥在集合里，但签名对不上（私钥不对 / 挑战被改 / 老客户端没自报公钥且全部验签失败） |
 | `bad-host-proof` | 对面无法证明它的主机密钥（通常说明它不是 landesk） |
 | `host-fingerprint-mismatch` | 这台机器的主机密钥变了：查地址簿里的指纹，确认后删掉该条重连 |
 | `no-proof-yet` | 握手没走完（超时或对端不听 landesk） |

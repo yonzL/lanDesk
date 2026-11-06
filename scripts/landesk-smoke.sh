@@ -69,7 +69,7 @@ if "$BIN" --landesk-connect "$ADDR" --landesk-key "$TMP/wrong.key" --landesk-boo
     > /dev/null 2>&1; then
     fail "错私钥竟然连上了"
 fi
-grep -q "landesk: reject bad-signature" "$TMP/service.log" || fail "Service 没有留下拒绝日志"
+grep -qE "landesk: reject (bad-signature|key-not-allowed)" "$TMP/service.log" || fail "Service 没有留下拒绝日志"
 
 echo "6/6 标记已验证 + 指纹被改必须被拒"
 "$BIN" --landesk-book-verify "$ADDR" --landesk-book "$TMP/book.json" > /dev/null || fail "标记已验证失败"

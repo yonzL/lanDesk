@@ -1924,7 +1924,15 @@ impl Connection {
         }
         self.lr.trusted_device_v2_token.clear();
         self.authorized = true;
-        log::info!("landesk: connection {} authorized", self.inner.id());
+        log::info!(
+            "landesk: connection {} authorized — peer id={} name={} platform={} version={} ip={}",
+            self.inner.id(),
+            self.lr.my_id,
+            self.lr.my_name,
+            self.lr.my_platform,
+            self.lr.version,
+            self.ip
+        );
         self.unauthorized_id = None;
         // One-time means gone once it has let a peer in, not once that peer
         // leaves. This session's later logins come in on the password the

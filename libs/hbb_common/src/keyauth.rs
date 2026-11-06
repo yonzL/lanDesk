@@ -200,6 +200,8 @@ pub enum RejectReason {
     BadHostProof,
     /// 认证协议版本不一致。
     VersionMismatch,
+    /// 对方拿来的身份不在这台 Service 绑定的集合里。
+    KeyNotAllowed,
     /// 证明到达之前就收到了会话消息。
     NoProofYet,
 }
@@ -212,6 +214,7 @@ impl RejectReason {
             Self::HostFingerprintMismatch => "host-fingerprint-mismatch",
             Self::BadHostProof => "bad-host-proof",
             Self::VersionMismatch => "version-mismatch",
+            Self::KeyNotAllowed => "key-not-allowed",
             Self::NoProofYet => "no-proof-yet",
         }
     }
@@ -226,6 +229,30 @@ impl std::fmt::Display for RejectReason {
 /// 拒绝时服务端留下的那一行日志。
 pub fn reject_log_line(reason: RejectReason, addr: &str) -> String {
     format!("landesk: reject {reason} from {addr}")
+}
+
+/// 更直白的拒绕行：带上“对方声明的身份”与“本机绑定的身份”，方便对号入座。
+pub fn reject_log_line_detail(
+    reason: RejectReason,
+    addr: &str,
+    presented: Option<&str>,
+    bound_pks: &[sign::PublicKey],
+) -> String {
+    let presented = presented
+        .map(|fp| format!("presented key {fp}"))
+        .unwrap_or_else(|| "presented key unknown (older client)".to_owned());
+    let bound = if bound_pks.is_empty() {
+        "no key bound".to_owned()
+    } else {
+        let list = bound_pks
+            .iter()
+            .take(8)
+            .map(fingerprint)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("bound {}: {list}", bound_pks.len())
+    };
+    format!("landesk: reject {reason} from {addr} — {presented}; {bound}")
 }
 
 /// Master 侧对目标主机的判断结果。
@@ -348,6 +375,15 @@ pub async fn challenge_and_verify(
     }
 }
 
+/// 认证失败时能拿到的全部信息：给日志用（哪把身份被拒、这台 Service 绑了几把）。
+pub struct AuthFailure {
+    pub reason: RejectReason,
+    /// 对方声明的 client 公钥指纹（老客户端不带 `client_pk` 时为 None）。
+    pub presented: Option<String>,
+    /// 本机绑定的公钥数量。
+    pub bound: usize,
+}
+
 /// 同一件事的集合版：命中任意一把绑定的 client 公钥即通过。
 pub async fn challenge_and_verify_any(
     stream: &mut crate::tcp::FramedStream,
@@ -356,8 +392,26 @@ pub async fn challenge_and_verify_any(
     host_sk: &sign::SecretKey,
     transcript: &[u8; 32],
 ) -> std::result::Result<AuthRole, RejectReason> {
+    challenge_and_verify_any_with_info(stream, bound_pks, host_pk, host_sk, transcript)
+        .await
+        .map_err(|failure| failure.reason)
+}
+
+pub async fn challenge_and_verify_any_with_info(
+    stream: &mut crate::tcp::FramedStream,
+    bound_pks: &[sign::PublicKey],
+    host_pk: &sign::PublicKey,
+    host_sk: &sign::SecretKey,
+    transcript: &[u8; 32],
+) -> std::result::Result<AuthRole, AuthFailure> {
+    let bound = bound_pks.len();
+    let fail = |reason| AuthFailure {
+        reason,
+        presented: None,
+        bound,
+    };
     if bound_pks.is_empty() {
-        return Err(RejectReason::NoBoundKey);
+        return Err(fail(RejectReason::NoBoundKey));
     }
     let nonce = new_nonce();
     let mut challenge = crate::rendezvous_proto::RendezvousMessage::new();
@@ -369,7 +423,7 @@ pub async fn challenge_and_verify_any(
         ..Default::default()
     });
     if stream.send(&challenge).await.is_err() {
-        return Err(RejectReason::NoProofYet);
+        return Err(fail(RejectReason::NoProofYet));
     }
     match stream.next_timeout(AUTH_TIMEOUT_MS).await {
         Some(Ok(bytes)) => match crate::rendezvous_proto::RendezvousMessage::parse_from_bytes(&bytes)
@@ -377,25 +431,58 @@ pub async fn challenge_and_verify_any(
             Ok(crate::rendezvous_proto::RendezvousMessage {
                 union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthProof(proof)),
                 ..
-            }) => match verify_auth_any(bound_pks, transcript, &nonce, &proof.signature) {
-                Ok(()) => {
-                    // 显式告诉对面“过了”：否则 Master 分不清“被拒”与“连接没了”。
-                    let mut ok = crate::rendezvous_proto::RendezvousMessage::new();
-                    ok.set_auth_ok(crate::rendezvous_proto::AuthOk::default());
-                    if stream.send(&ok).await.is_err() {
-                        return Err(RejectReason::NoProofYet);
+            }) => {
+                // 对方自报的公钥（公开数据）：有它就能直接指名“拒绝的是哪把身份”，
+                // 也能在最坏情况下只验一次而不是遍历整个集合。老客户端不带，则回落遍历。
+                let presented = sign::PublicKey::from_slice(&proof.client_pk);
+                let presented_fp = presented.as_ref().map(fingerprint);
+                let candidates: Vec<sign::PublicKey> = match &presented {
+                    Some(pk) => {
+                        if !bound_pks.contains(pk) {
+                            let failure = AuthFailure {
+                                reason: RejectReason::KeyNotAllowed,
+                                presented: presented_fp,
+                                bound,
+                            };
+                            send_auth_err(stream, failure.reason).await;
+                            return Err(failure);
+                        }
+                        vec![pk.clone()]
                     }
-                    Ok(if proof.control {
-                        AuthRole::Controller
-                    } else {
-                        AuthRole::Viewer
-                    })
+                    None => bound_pks.to_vec(),
+                };
+                match verify_auth_any(&candidates, transcript, &nonce, &proof.signature) {
+                    Ok(()) => {
+                        // 显式告诉对面“过了”：否则 Master 分不清“被拒”与“连接没了”。
+                        let mut ok = crate::rendezvous_proto::RendezvousMessage::new();
+                        ok.set_auth_ok(crate::rendezvous_proto::AuthOk::default());
+                        if stream.send(&ok).await.is_err() {
+                            return Err(AuthFailure {
+                                reason: RejectReason::NoProofYet,
+                                presented: presented_fp,
+                                bound,
+                            });
+                        }
+                        Ok(if proof.control {
+                            AuthRole::Controller
+                        } else {
+                            AuthRole::Viewer
+                        })
+                    }
+                    Err(reason) => {
+                        let failure = AuthFailure {
+                            reason,
+                            presented: presented_fp,
+                            bound,
+                        };
+                        send_auth_err(stream, failure.reason).await;
+                        Err(failure)
+                    }
                 }
-                Err(reason) => Err(reason),
-            },
-            _ => Err(RejectReason::NoProofYet),
+            }
+            _ => Err(fail(RejectReason::NoProofYet)),
         },
-        _ => Err(RejectReason::NoProofYet),
+        _ => Err(fail(RejectReason::NoProofYet)),
     }
 }
 
@@ -434,10 +521,11 @@ pub async fn answer_challenge(
     proof.set_auth_proof(crate::rendezvous_proto::AuthProof {
         signature: sign_auth(kp, transcript, &challenge.nonce).into(),
         control,
+        client_pk: bytes::Bytes::copy_from_slice(&kp.pk.0),
         ..Default::default()
     });
     stream.send(&proof).await.map_err(|_| RejectReason::NoProofYet)?;
-    // 等 Service 的明示：没收到回执就当没通过。
+    // 等 Service 的明示：过了（AuthOk）或者被拒（AuthErr 带原因）。
     match stream.next_timeout(AUTH_TIMEOUT_MS).await {
         Some(Ok(bytes)) => match crate::rendezvous_proto::RendezvousMessage::parse_from_bytes(&bytes)
         {
@@ -445,9 +533,36 @@ pub async fn answer_challenge(
                 union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthOk(_)),
                 ..
             }) => Ok(outcome),
+            Ok(crate::rendezvous_proto::RendezvousMessage {
+                union: Some(crate::rendezvous_proto::rendezvous_message::Union::AuthErr(err)),
+                ..
+            }) => Err(reject_reason_from_str(&err.reason)),
             _ => Err(RejectReason::BadSignature),
         },
         _ => Err(RejectReason::BadSignature),
+    }
+}
+
+/// 把拒绝原因明确告诉对端，然后由调用方断开。没有这一步，对端只能说“连接没了”。
+async fn send_auth_err(stream: &mut crate::tcp::FramedStream, reason: RejectReason) {
+    let mut msg = crate::rendezvous_proto::RendezvousMessage::new();
+    msg.set_auth_err(crate::rendezvous_proto::AuthErr {
+        reason: format!("{reason}"),
+        ..Default::default()
+    });
+    let _ = stream.send(&msg).await;
+}
+
+/// 把对端回过来的拒绝原因字符串还原成枚举（未知值归为 `BadSignature`）。
+pub fn reject_reason_from_str(text: &str) -> RejectReason {
+    match text {
+        "no-bound-key" => RejectReason::NoBoundKey,
+        "key-not-allowed" => RejectReason::KeyNotAllowed,
+        "host-fingerprint-mismatch" => RejectReason::HostFingerprintMismatch,
+        "bad-host-proof" => RejectReason::BadHostProof,
+        "version-mismatch" => RejectReason::VersionMismatch,
+        "no-proof-yet" => RejectReason::NoProofYet,
+        _ => RejectReason::BadSignature,
     }
 }
 
@@ -698,9 +813,10 @@ mod tests {
                 true
             )
         );
-        assert_eq!(verified, Err(RejectReason::BadSignature));
-        // Master 也必须知道自己的证明没被接受，不能当成功。
-        assert_eq!(answered, Err(RejectReason::BadSignature));
+        // 客户端现在会在证明里带上自己的公钥：服务端能直接判定“这把身份不在这台机器允许的集合里”。
+        assert_eq!(verified, Err(RejectReason::KeyNotAllowed));
+        // Master 也必须知道自己的证明没被接受，而且现在能知道**具体原因**（服务端会回 AuthErr）。
+        assert_eq!(answered, Err(RejectReason::KeyNotAllowed));
     }
 
     #[tokio::test]

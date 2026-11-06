@@ -723,10 +723,16 @@ pub async fn enforce(
     }
     // 每次连接重读：allow/revoke 不需要重启服务。
     let keys = reload_auth_keys();
+    // 所有失败统一成 AuthFailure，这样日志里能同时给出“对方声明的身份”与“本机绑定的身份”。
+    let failure = |reason| keyauth::AuthFailure {
+        reason,
+        presented: None,
+        bound: keys.len(),
+    };
     let result = match stream {
         hbb_common::Stream::Tcp(tcp) => match host_keypair() {
             Some((host_pk, host_sk)) => {
-                keyauth::challenge_and_verify_any(
+                keyauth::challenge_and_verify_any_with_info(
                     tcp,
                     &keys,
                     &host_pk,
@@ -736,16 +742,27 @@ pub async fn enforce(
                 .await
             }
             // 没有主机密钥就无法向 Master 证明“我是哪台机器”，宁可不接。
-            None => Err(RejectReason::BadHostProof),
+            None => Err(failure(RejectReason::BadHostProof)),
         },
         // landesk 只走 TCP 直连；别的传输没有这条鉴权路径，一律当没证明处理。
-        _ => Err(RejectReason::NoProofYet),
+        _ => Err(failure(RejectReason::NoProofYet)),
     };
     match result {
         Ok(role) => Ok(role),
-        Err(reason) => {
-            log::warn!("{}", keyauth::reject_log_line(reason, &addr.to_string()));
-            bail!("landesk: authentication refused ({reason})")
+        Err(failure) => {
+            // 被拒的连接是 Peer 可控的：节流，否则一次扫描就能把日志写满。
+            hbb_common::throttled_log!(
+                std::time::Duration::from_secs(60),
+                warn,
+                "{}",
+                keyauth::reject_log_line_detail(
+                    failure.reason,
+                    &addr.to_string(),
+                    failure.presented.as_deref(),
+                    &keys
+                )
+            );
+            bail!("landesk: authentication refused ({})", failure.reason)
         }
     }
 }

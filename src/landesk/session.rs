@@ -93,6 +93,21 @@ impl InvokeUiSession for LandeskUi {
     fn set_peer_info(&self, peer_info: &PeerInfo) {
         // 完整的那份 PeerInfo（含 platform_additions）随登录响应下发，走这里而不是单独那条消息。
         self.note_platform_additions(&peer_info.platform_additions);
+        // 一条 info 级别的“我在跟谁说话”：主机名/登录用户/平台/分辨率，便于事后核对。
+        let displays = peer_info
+            .displays
+            .iter()
+            .map(|display| format!("{}x{}", display.width, display.height))
+            .collect::<Vec<_>>()
+            .join(",");
+        log::info!(
+            "landesk: connected to host={} user={} platform={} version={} displays=[{}]",
+            peer_info.hostname,
+            peer_info.username,
+            peer_info.platform,
+            peer_info.version,
+            displays
+        );
     }
     fn set_displays(&self, displays: &Vec<DisplayInfo>) {
         let mut slots = self.displays.lock().unwrap();
