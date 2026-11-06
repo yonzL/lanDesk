@@ -82,8 +82,17 @@
 
 ### 高优先
 
-- [ ] **Win10 那台恢复后补验**
-  现状：文件剪贴板与快捷键只在 Win11 验过。Win10 整机掉线（ARP 表里没有、所有端口不通），需要在 VirtualBox 控制台把它拉起来，然后部署同一版并复验两条：远端复制文件 → 本机粘贴、本机复制文件 → 远端粘贴
+- [ ] **`hbbs_http` 收尾清理**（1844 行）
+  现状：rendezvous/自动更新/版本检查都删了，只剩 `hbbs_http`（HTTP 客户端 + Pro 同步 + 插件下载）。它**没有主动拨号**，但仍是“云/Pro”代码。调用点只剩四处：`connection.rs` 的 `sync::signal_receiver()`、`ipc.rs` 的 `is_pro()` 与 `register_switch_grant()`、`common.rs` 的两个 import。
+  从哪儿开始：把这四处去掉（`is_pro()` → 直接当作 false），删模块，跑一遍回归
+- [ ] **CI 做主 crate 完整构建 + 打 tag 出包**
+  现状：CI 只 `cargo check`；发版靠本机 `scripts/dist.sh`。既然 Release 只在**打 tag** 时发，CI 就该在 tag 上产出 `dist/*.zip` 并附到 Release
+  从哪儿开始：在 workflow 里加 vcpkg + libclang 缓存（Windows 上 3–4 分钟），tag 触发时跑 `scripts/dist.sh` 并 `gh release create`
+- [ ] **低配被控机画面策略（分辨率降档开关）**
+  现状：1080p + VP9 软编在 4 vCPU VM 上约 10–20 fps；`image_quality=low` 只降码率不降分辨率
+  从哪儿开始：界面里加“请求远端分辨率（1280×720 / 1024×768 / 原分辨率）”，走上游 `Message::Resolution`
+
+- [x] **Win10 那台恢复后补验**：已通过（文件剪贴板与快捷键在两台 VM 上都验过）
 - [ ] **低配被控机上的画面策略**
   现状：1080p + VP9 软编在 4 vCPU 的 VM 上约 10–20 fps；`image_quality=low` 只降码率不降分辨率。你说过“虚拟机画面不纠结”，所以这条是“要做的话怎么做”
   从哪开始：评估把“分辨率降档（1280×720）”做成界面开关——它比调画质对帧率有效得多，但会改变被控机显示设置
@@ -97,12 +106,11 @@
 ### 低优先（工程与发布）
 
 - [ ] GitHub Release 发布 `dist/*.zip`（`dist/` 是 gitignore 的，需要 token）
-- [ ] 代码签名（未签名会被 SmartScreen 拦）
-- [ ] 把主 crate 的完整构建纳入 CI（需要 vcpkg + libclang，成本较高；目前主 crate 只在本地验证）
-- [ ] 上游公网模块的物理删除（`rendezvous_mediator`、`hbbs_http`、`updater*` 等）
-  现状：landesk 模式**已不启动**它们，但代码仍在树里；删除点集中在会话与鉴权核心，需要能编译验证时才动
-- [ ] 用 Flutter 重做 Master 界面（SDK 已下载在 `D:\dev_ai\_tools\flutter.zip`；当前是纯 Rust 的 eframe 窗口）
+- [ ] 代码签名——**按决定不做**（无证书，文档说明 SmartScreen 提示即可）
+- [x] 上游公网模块的物理删除：`rendezvous_mediator`（1844）、`updater` + `manual_update`（846）、客户端回退拨号路径、启动时的 `api.rustdesk.com` 版本检查——共约 2900 行。`hbbs_http` 只剩收尾（见高优先）
+- [ ] 用 Flutter 重做 Master 界面（SDK 已下载在 `D:\dev_ai\_tools\flutter.zip`）——正式版的界面方向；需要先解决 `flutter_rust_bridge` codegen 或手写 Dart 绑定，并把 landesk 能力按 `flutter_ffi` 的形状暴露
 - [ ] mDNS 局域网发现——**按决定不做**
+- [ ] 终端（ConPTY）——**按决定不做**（需要独立的终端交互界面，超出产品范围）
 
 ## 已知边界与风险
 
