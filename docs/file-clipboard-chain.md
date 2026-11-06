@@ -118,3 +118,38 @@ landesk: file clipboard state — server_file_transfer_enabled: ?, enable_file_c
 | 跳过 `RendezvousMediator::start_all()`，改为 await 自己的监听 | 刻意：无出站 |
 
 **结论**：截至本轮，真正的"漏掉上游副作用"只有 `try_start_cm` 一处。以后在 landesk 模式里砍掉上游某段流程时，必须检查它除了"启动某服务"之外还**给其他组件发过什么状态**（CM 的 `Data::Login` 就是这类）。
+
+## 7. 第三处差异：三个"服务端权限"标志的初始化
+
+上游两个 UI 外壳构造会话时，在 `..Default::default()` 之上只覆盖四个字段（`flutter.rs:1358-1360`、`ui/remote.rs:600-603`）：
+
+```rust
+server_keyboard_enabled:            Arc::new(RwLock::new(true)),
+server_file_transfer_enabled:       Arc::new(RwLock::new(true)),
+server_clipboard_enabled:           Arc::new(RwLock::new(true)),
+reconnect_count:                    Arc::new(AtomicUsize::new(0)),   // 默认也是 0
+```
+
+`Session::default()` 里这三个 `RwLock<bool>` 都是 **false**。我们只补了 file 那个，第二个仍然拦住了文件剪贴板：
+
+```rust
+// ui_session_interface.rs:195
+pub fn is_file_clipboard_required(&self) -> bool {
+    *self.server_keyboard_enabled.read().unwrap()      // ← 仍然是 false
+        && *self.server_file_transfer_enabled.read().unwrap()
+        && lc.enable_file_copy_paste.v
+        && !lc.view_only.v
+}
+```
+
+后果：客户端把服务端发来的 `Cliprdr` 判成 `stop: true`（日志 `Process clipboard message from server peer, stop: true, ..., file_transfer_enabled: false`），于是永远不往本机 OLE 剪贴板写虚拟文件 —— 这一侧看起来就是"复制了但粘不出来"。
+
+**修复**：三个标志一起置 true，与上游构造保持逐字段一致。
+
+## 8. 为什么这三次都栽在同一类地方
+
+landesk 不是新的 UI 外壳，而是**复用上游会话**的新调用方。上游把"会话的初始状态"分散在两个 UI 外壳的构造代码里而不是 `Default` 里，所以任何新的调用方都必须自己复制那几行。判断方法固定为：
+
+1. 找到上游该功能读的每个字段/选项（本例：`is_file_clipboard_required` 的三个依赖）；
+2. 反向查找上游**谁把它们设成 true**（`flutter.rs` / `ui/remote.rs` 的构造）；
+3. 逐字段对比我们的构造。缺一个，功能就静默失效，而且日志只显示布尔值，不显示"为什么"。

@@ -585,10 +585,13 @@ fn build_session(
         last_progress: Default::default(),
     };
     *session.ui_handler.session.lock().unwrap() = Some(session.clone());
-    // 上游的 Flutter / Sciter 会话在构造时把这个置为 true；`Session::default()` 是 false。
-    // 为 false 时客户端认为"对端不允许文件传输"，会主动关掉自己的 cliprdr 上下文，
-    // 于是文件剪贴板两个方向全部失效。
+    // 上游的 Flutter / Sciter 在构造会话时把三个服务端权限标志显式置为 true
+    // （`flutter.rs:1358-1360`、`ui/remote.rs:600-603`），`Session::default()` 里它们是 false。
+    // `is_file_clipboard_required()` 同时读 keyboard、file 与 `enable_file_copy_paste`，
+    // 任何一个为 false 都会让客户端 `stop` 掉文件剪贴板。
+    *session.server_keyboard_enabled.write().unwrap() = true;
     *session.server_file_transfer_enabled.write().unwrap() = true;
+    *session.server_clipboard_enabled.write().unwrap() = true;
     // 编码器默认值必须写进**这个 peer 的 PeerConfig**：登录消息里的 `prefer` 来自
     // `Decoder::preference(id)` → `PeerConfig::load(id)`，而此时 `LoginConfigHandler` 还没
     // initialize（id 为空），在 session 上 `set_option` 落不到对端那份配置里。
