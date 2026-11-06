@@ -123,6 +123,8 @@ struct App {
     quality: String,
     fps: i32,
     last_frame_at: Option<std::time::Instant>,
+    /// 主窗口上一次重读地址簿的时间。
+    last_book_poll: Option<std::time::Instant>,
 }
 
 impl App {
@@ -153,6 +155,7 @@ impl App {
             quality: "low".to_owned(),
             fps: 30,
             last_frame_at: None,
+            last_book_poll: None,
         };
         app.reload();
         // 远程窗口模式：进程起来就直接连，不需要用户在子窗口里再点一次。
@@ -162,8 +165,22 @@ impl App {
         app
     }
 
-    fn reload(&mut self) {
-        match AddressBook::load(&self.book_path) {
+    /// 每 2 秒重读一次地址簿（文件很小）：会话是独立进程开的，
+    /// 它写回的指纹/条目只有重读才会反映到主窗口。
+    fn poll_book_reload(&mut self) {
+        const INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+        let now = std::time::Instant::now();
+        let due = self
+            .last_book_poll
+            .map(|last| now.duration_since(last) >= INTERVAL)
+            .unwrap_or(true);
+        if due {
+            self.last_book_poll = Some(now);
+            self.reload();
+        }
+    }
+
+    fn reload(&mut self) {        match AddressBook::load(&self.book_path) {
             Ok(book) => {
                 self.book = book;
                 self.load_error = None;
@@ -226,11 +243,6 @@ impl App {
                 self.session = Some(session);
                 self.session_peer = Some(addr.clone());
                 self.selected = Some(addr.clone());
-                // 主窗口靠这个字段显示“最近连接”；写回地址簿，主窗口会自动重读。
-                self.book.note_connected(&addr);
-                if let Err(err) = self.book.save(&self.book_path) {
-                    self.log.push(format!("Saving the address book failed: {err:#}"));
-                }
             }
             Err(err) => self.log.push(format!("Connect failed: {err:#}")),
         }
@@ -800,6 +812,9 @@ impl eframe::App for App {
         self.pump_frames(ctx);
         // 远程窗口模式：只有会话界面，没有地址簿。
         let remote = self.remote_addr.is_some();
+        if !remote {
+            self.poll_book_reload();
+        }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(4.0);
@@ -886,10 +901,6 @@ impl eframe::App for App {
                                                     Some(_) => "?".to_owned(),
                                                     None => "·".to_owned(),
                                                 };
-                                                let when = match entry.last_connected {
-                                                    Some(ts) => format!("last {}", short_ago(ts)),
-                                                    None => "never".to_owned(),
-                                                };
                                                 ui.horizontal(|ui| {
                                                     let mut is_target =
                                                         self.targets.contains(&entry.addr);
@@ -908,7 +919,7 @@ impl eframe::App for App {
                                                         == Some(&entry.addr);
                                                     let response = ui
                                                         .selectable_label(selected, label)
-                                                        .on_hover_text(format!("{status}  {when}"));
+                                                        .on_hover_text(status.to_owned());
                                                     if response.clicked() {
                                                         self.selected = Some(entry.addr.clone());
                                                     }
@@ -917,7 +928,7 @@ impl eframe::App for App {
                                                         self.selected = Some(entry.addr.clone());
                                                         open_remote_window(&entry.addr);
                                                     }
-                                                    ui.small(format!("{status} {when}"));
+                                                    ui.small(status.to_owned());
                                                 });
                                             }
                                         });
@@ -1294,20 +1305,3 @@ fn open_remote_window(addr: &str) {
     }
 }
 
-/// “最近连接”的人话版本（主窗口那一列用）。
-fn short_ago(ts: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default();
-    let secs = (now - ts).max(0);
-    if secs < 60 {
-        "just now".to_owned()
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86_400)
-    }
-}
