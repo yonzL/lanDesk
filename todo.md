@@ -98,9 +98,10 @@
 
 - [ ] 代码签名——**按决定不做**（无证书，文档说明 SmartScreen 提示即可）
 - [x] 上游公网模块的物理删除：`rendezvous_mediator`（1844）、`updater` + `manual_update`（846）、客户端回退拨号路径、启动时的 `api.rustdesk.com` 版本检查——共约 2900 行。`hbbs_http` 只剩收尾（见高优先）
-- [ ] 用 Flutter 重做 Master 界面（SDK 已下载在 `D:\dev_ai\_tools\flutter.zip`）——正式版的界面方向；需要先解决 `flutter_rust_bridge` codegen 或手写 Dart 绑定，并把 landesk 能力按 `flutter_ffi` 的形状暴露
+- [x] **Flutter 工具链打通**：SDK 3.47.9 + codegen 1.80.1 可用（`docs/flutter-path.md` 第 11 节记了 `VCPKG_ROOT` 被 vcvars 覆盖、Git Bash `link.exe` 抢位两个坑）
+- [x] **Flutter 主界面接上地址簿**：`flutter/lib/landesk/address_book_page.dart` 读 `bind.landeskBookList()`，组/子组树 + 状态圆点 + 双击连接 + 每行菜单，2 秒轮询文件；云端那四个 tab 在模型里禁掉
+- [ ] **Flutter 自己的远程会话窗口**：要复用上游 `desktop_multi_window` + `runMultiWindow` 链路；现在双击落到同目录 `landesk-client.exe`（eframe 壳，两个 exe 一起发布），功能是真能用的
 - [ ] mDNS 局域网发现——**按决定不做**
-- [ ] 终端（ConPTY）——**按决定不做**（需要独立的终端交互界面，超出产品范围）
 
 ## 已知边界与风险
 
