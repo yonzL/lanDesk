@@ -1399,3 +1399,11 @@ pub fn apply_service_defaults() {
         log::info!("landesk: av1-test=N so that auto picks vp9 (or vp8 on <=4GB hosts)");
     }
 }
+
+/// landesk 模式下是否必须完成密钥证明才能继续。
+///
+/// 与 `takes_over_network` 的区别很重要：后者要求**有监听端口**，而这里只要求"这台机器按 landesk
+/// 配置运行"。鉴权不能因为"端口没配"就静默放行——没配端口只说明它不监听，不该变成"不验身份"。
+pub fn requires_key_proof() -> bool {
+    config().is_some()
+}

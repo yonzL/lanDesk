@@ -62,26 +62,34 @@ CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 
 
 ### 大陆网络下的前置条件
 
-上游的依赖图里有一批只存在于 GitHub 的 git 源，还有一个挂在 `chromium.googlesource.com` 上的子模块。直连环境下这些都不通，以下配置已在本机验证可用（**不入库**，属于个人环境）：
+依赖图里有三类在大陆直连不通的来源：crates.io、GitHub 上的 git 源、以及 `*.googlesource.com`
+（既是 `libwebm` 子模块，也是 vcpkg 里 `aom` / `libyuv` 的 `vcpkg_from_git` 源）。下面都是**个人环境**的配置，不入库。
 
 | 阻碍 | 做法 |
 |---|---|
 | crates.io 约 25KB/s | `~/.cargo/config.toml` 里把 `source.crates-io` 换成 `sparse+https://mirrors.ustc.edu.cn/crates.io-index/`（实测约 220KB/s） |
-| GitHub 的 git 源握手失败（schannel） | 环境变量 `GIT_CONFIG_*` 注入 `http.sslBackend=openssl`，并 `url.https://ghfast.top/https://github.com/.insteadOf=https://github.com/` 走可用代理 |
-| `chromium.googlesource.com/webm/libwebm` 子模块 | `url.https://github.com/webmproject/libwebm.insteadOf=https://chromium.googlesource.com/webm/libwebm`；官方 GitHub 镜像包含该提交 |
+| GitHub 的 git 源握手失败（schannel） | `GIT_CONFIG_*` 注入 `http.sslBackend=openssl`；然后让 git 走 HTTPS 代理（`HTTPS_PROXY` / `http.proxy`），**或者**用 `url.<你的镜像>/https://github.com/.insteadOf=https://github.com/` 改走镜像 |
+| `chromium.googlesource.com/webm/libwebm` 子模块 | 同一套 `insteadOf` 指向带该提交的镜像（例：`url.<你的镜像>/https://github.com/webmproject/libwebm.insteadOf=https://chromium.googlesource.com/webm/libwebm`），或让 git 走代理 |
+| vcpkg 的 `aom` / `libyuv` | 这两个 port 自己 `vcpkg_from_git`：`https://aomedia.googlesource.com/aom`、`https://chromium.googlesource.com/libyuv/libyuv`。要么给 git 配代理，要么对这两个前缀同样用 `insteadOf` 指向带对应提交的镜像 |
+| `VCPKG_ROOT` 未设置 | `libs/scrap/build.rs` 直接读它；指向 vcpkg 根目录，并先把原生依赖装成静态库：`vcpkg install opus:x64-windows-static libvpx:x64-windows-static aom:x64-windows-static libyuv:x64-windows-static` |
 | bindgen 找不到 libclang | 安装 LLVM 并设 `LIBCLANG_PATH` 到其 `bin` 目录 |
 
-完整的一条命令（示例值按自己的代理端口改）：
+**关于镜像**：`<你的镜像>` 换成你信任的（自建、付费或组织内部）。公共免费加速镜像意味着这几条
+fetch 的 TLS 在镜像处终止；只在你能接受这一点、或事后核对了提交哈希时使用，不要当成默认值。
+
+一条命令的骨架（代理端口与镜像按自己的环境改）：
 
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
-  GIT_CONFIG_COUNT=3 \
+  VCPKG_ROOT=/path/to/vcpkg \
+  GIT_CONFIG_COUNT=2 \
   GIT_CONFIG_KEY_0=http.sslBackend GIT_CONFIG_VALUE_0=openssl \
-  GIT_CONFIG_KEY_1=url.https://ghfast.top/https://github.com/.insteadOf GIT_CONFIG_VALUE_1=https://github.com/ \
-  GIT_CONFIG_KEY_2=url.https://github.com/webmproject/libwebm.insteadOf GIT_CONFIG_VALUE_2=https://chromium.googlesource.com/webm/libwebm \
+  GIT_CONFIG_KEY_1=http.proxy          GIT_CONFIG_VALUE_1="$HTTPS_PROXY" \
   LIBCLANG_PATH="/c/Program Files/LLVM/bin"
 cargo check -p rustdesk --lib
 ```
+
+如果代理对 `googlesource.com` 无效，就把上表的 `insteadOf` 逐条追加成 `GIT_CONFIG_KEY_2/3…`。
 
 ## 试用
 

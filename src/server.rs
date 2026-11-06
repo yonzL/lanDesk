@@ -203,7 +203,8 @@ pub async fn create_tcp_connection(
             bail!("evicted to make room for a newer unauthenticated connection");
         }
     };
-    // landesk: 密钥交换之后、任何会话消息之前要求 Master 证明自己。未配置时是空操作。
+    // landesk: 密钥交换之后、任何会话消息之前要求 Master 证明自己。
+    require_key_proof(crate::landesk::requires_key_proof(), transcript.as_ref())?;
     if let Some(transcript) = transcript {
         let role = crate::landesk::enforce(&mut stream, &transcript, addr).await?;
         // 与上游一致：多个操作者可以同时操作，后写入者生效。这里只把“以观察者接入”记一笔，
@@ -904,5 +905,32 @@ pub async fn stop_main_window_process() {
         if let Err(e) = crate::platform::try_kill_rustdesk_main_window_process() {
             log::error!("kill failed: {}", e);
         }
+    }
+}
+
+
+/// landesk 模式下必须拿到密钥交换的 transcript 才能继续。
+///
+/// `transcript` 由对端控制：answer 一个空的 `asymmetric_value` 就能让它变成 None。而 landesk
+/// 模式又跳过了密码与本地接受，所以缺 transcript 时必须拒绝，否则"证明先于会话"不成立。
+/// `takes_over_network` 要求**有监听端口**，那条不该用在鉴权上：没配端口只说明它不监听。
+fn require_key_proof(landesk: bool, transcript: Option<&[u8; 32]>) -> ResultType<()> {
+    if landesk && transcript.is_none() {
+        bail!("landesk: no key exchange transcript, refusing the connection");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod key_proof_tests {
+    use super::*;
+
+    #[test]
+    fn landesk_without_a_transcript_is_refused() {
+        let transcript = [7u8; 32];
+        assert!(require_key_proof(true, None).is_err());
+        assert!(require_key_proof(true, Some(&transcript)).is_ok());
+        // 非 landesk 构建保持上游行为：缺 transcript 不算错。
+        assert!(require_key_proof(false, None).is_ok());
     }
 }
