@@ -189,3 +189,32 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_D
 - `flutter/analysis_options.yaml`：被注入 `analyzer: exclude:`（`build/**`、各平台目录）。
 
 上一轮就是它们混进了文档提交，`e67e96a` 把它们回滚掉的。跑完 `pub get` 后先 `git checkout` 这两个文件。
+
+## 11. 本机的构建入口（cc-rs / CMake 都要 MSVC 环境）
+
+两个环境事实决定了怎么跑构建，写成一个脚本最省事（脚本本身不入库，属于个人环境）：
+
+```bat
+@echo off
+rem vcvars64 会把 VCPKG_ROOT 改成 VS 自带的那个空 vcpkg，所以先存后恢复。
+set "LD_VCPKG=%VCPKG_ROOT%"
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul
+if defined LD_VCPKG set "VCPKG_ROOT=%LD_VCPKG%"
+cd /d D:\dev_ai\landesk
+cargo %*
+```
+
+调用方式（bash 里）：
+
+```bash
+export VCPKG_ROOT="D:\dev_ai\_tools\vcpkg" LIBCLANG_PATH="C:\Program Files\LLVM\bin"
+cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
+```
+
+为什么必须这样：
+
+1. **vcvars64 覆盖 `VCPKG_ROOT`**：它会把它设成 `…\VC\vcpkg`（里面没有我们的 opus/libvpx/aom/libyuv），
+   于是 `magnum-opus` 报 `fatal error C1083: 'opus/opus_multistream.h' file not found`。必须先存后恢复。
+2. **Git Bash 的 `link.exe`（coreutils）会抢在 MSVC linker 前面**：报 `link: extra operand`。
+   vcvars 会把 MSVC 的 `bin\Hostx64\x64` 放进 PATH 前面，正好解决。
+3. 构建缓存会记住旧的错误结果：改了 `VCPKG_ROOT` 后要先 `cargo clean -p magnum-opus -p scrap`。
