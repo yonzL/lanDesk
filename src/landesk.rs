@@ -398,6 +398,52 @@ fn config_file_path() -> PathBuf {
     exe_dir().join("landesk.json")
 }
 
+/// 从配置里拿掉一把公钥：`auth_keys` 集合和旧单值 `auth_key` 都要清。
+///
+/// 只清集合是不够的：旧版 `landesk.json` 用单值 `auth_key`，两边合并后看起来"已经撤销了"，
+/// 实际连接还会被放行。
+fn revoke_from_config(file: &mut ConfigFile, key: &sign::PublicKey) {
+    file.auth_keys.retain(|existing| {
+        parse_public_key(existing.trim())
+            .map(|parsed| parsed != *key)
+            .unwrap_or(true)
+    });
+    if file
+        .auth_key
+        .as_deref()
+        .and_then(|value| parse_public_key(value.trim()).ok())
+        .map(|parsed| parsed == *key)
+        .unwrap_or(false)
+    {
+        file.auth_key = None;
+    }
+}
+
+/// 把公钥目录里等于这把公钥的文件删掉，返回删掉的路径。
+fn remove_key_from_dir(key: &sign::PublicKey) -> ResultType<Vec<PathBuf>> {
+    let dir = keys_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(Vec::new());
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let matched = std::fs::read_to_string(&path)
+            .ok()
+            .map(|text| parse_public_key(text.trim()))
+            .and_then(Result::ok)
+            .map(|parsed| parsed == *key)
+            .unwrap_or(false);
+        if matched && std::fs::remove_file(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    Ok(removed)
+}
+
 fn load_config_file() -> Option<(Option<u16>, Vec<sign::PublicKey>, Vec<String>)> {
     let text = std::fs::read_to_string(config_file_path()).ok()?;
     let file: ConfigFile = serde_json::from_str(&text).ok()?;
@@ -848,6 +894,24 @@ mod tests {
         take_from_args(&mut args).expect("parse");
         assert_eq!(args, vec!["--server".to_owned(), "--tray".to_owned()]);
     }
+
+    /// 回归：旧版 `landesk.json` 用单值 `auth_key`，只清 `auth_keys` 会让撤销静默失效。
+    #[test]
+    fn revoke_clears_both_the_set_and_the_legacy_single_key() {
+        let _ = sodiumoxide::init();
+        let (keep, _) = sign::gen_keypair();
+        let (drop, _) = sign::gen_keypair();
+        let mut file = ConfigFile {
+            listen_port: Some(21118),
+            auth_keys: vec![hex_of(&keep), hex_of(&drop)],
+            auth_key: Some(hex_of(&drop)),
+            allowed_networks: Vec::new(),
+        };
+        revoke_from_config(&mut file, &drop);
+        assert_eq!(file.auth_keys, vec![hex_of(&keep)]);
+        assert!(file.auth_key.is_none(), "legacy auth_key survived");
+        assert_eq!(file.public_keys(), vec![keep]);
+    }
 }
 
 /// 监听参数：监督循环用它判断"配置有没有变，需不需要重绑"。
@@ -1032,19 +1096,29 @@ pub fn run_client_key_command(config: &LandeskConfig) -> ResultType<()> {
     let key = parse_key_arg(target)?;
     let hex = public_key_hex(&key);
     let mut file = read_config_file_or_default();
-    file.auth_keys.retain(|existing| {
-        parse_public_key(existing.trim())
-            .map(|parsed| parsed != key)
-            .unwrap_or(true)
-    });
     if adding {
+        revoke_from_config(&mut file, &key);
         file.auth_keys.push(hex.clone());
+    } else {
+        revoke_from_config(&mut file, &key);
     }
     write_config_file(&file)?;
+    let removed_files = if adding {
+        Vec::new()
+    } else {
+        remove_key_from_dir(&key)?
+    };
     if adding {
         println!("已允许 client 公钥 {hex}（下一次连接起生效，不需要重启服务）");
     } else {
         println!("已撤销 client 公钥 {hex}（下一次连接起生效）");
+        for path in removed_files {
+            println!("  同时删除了公钥文件 {}", path.display());
+        }
+        // 撤销后还要真的撤销：目录里/别的字段里如果还留着这把公钥，上面的写入就白做了。
+        if reload_auth_keys().contains(&key) {
+            bail!("{hex} 仍在允许列表里（检查 {} 或 {} 里的残留）", config_file_path().display(), keys_dir().display());
+        }
     }
     if file.listen_port.is_none() {
         println!("提示：landesk.json 里还没有 listen_port，服务不会监听");
