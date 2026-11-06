@@ -64,6 +64,14 @@ pub struct LandeskConfig {
     pub client_list: bool,
     /// Master 侧：把本机公钥分发到这些 Service（一步完成新增 client）。
     pub enroll: Option<Vec<String>>,
+    /// client：导入一把私钥到身份目录。
+    pub import_key: Option<PathBuf>,
+    /// client：列出可用身份。
+    pub key_list: bool,
+    /// client：从身份目录卸载一把私钥（文件名或主干）。
+    pub key_forget: Option<String>,
+    /// 服务端：打印本机主机公钥与指纹；给出路径时同时导出公钥文件。
+    pub host_key: Option<Option<PathBuf>>,
     /// 监听参数是不是从 `landesk.json` 读来的：监督循环只在这为 true 时重读文件，
     /// 否则命令行给的端口会被文件覆盖（测试与临时实例就靠命令行）。
     pub listen_spec_from_file: bool,
@@ -115,6 +123,10 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut revoke_client = None;
     let mut client_list = false;
     let mut enroll = None;
+    let mut import_key = None;
+    let mut key_list = false;
+    let mut key_forget = None;
+    let mut host_key: Option<Option<PathBuf>> = None;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -160,10 +172,12 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 key = Some(PathBuf::from(value));
             }
             "--landesk-genkey" => {
-                let Some(value) = iter.next() else {
-                    bail!("--landesk-genkey needs a path");
-                };
-                genkey = Some(PathBuf::from(value));
+                // 不带路径时用描述性名字（角色-主机-时间-IP）生成到 exe 同目录。
+                let has_path = iter.peek().map(|next| !next.starts_with("--")).unwrap_or(false);
+                genkey = Some(match has_path {
+                    true => PathBuf::from(iter.next().unwrap_or_default()),
+                    false => PathBuf::new(),
+                });
             }
             "--landesk-book-import" => {
                 let Some(value) = iter.next() else {
@@ -223,6 +237,28 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 revoke_client = Some(value);
             }
             "--landesk-client-list" => client_list = true,
+            "--landesk-import-key" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-import-key needs a path to a private key");
+                };
+                import_key = Some(PathBuf::from(value));
+            }
+            "--landesk-key-list" => key_list = true,
+            "--landesk-key-forget" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-key-forget needs an identity name");
+                };
+                key_forget = Some(value);
+            }
+            "--landesk-host-key" => {
+                let has_path = iter.peek().map(|next| !next.starts_with("--")).unwrap_or(false);
+                let export = if has_path {
+                    Some(PathBuf::from(iter.next().unwrap_or_default()))
+                } else {
+                    None
+                };
+                host_key = Some(export);
+            }
             "--landesk-enroll" => {
                 let Some(value) = iter.next() else {
                     bail!("--landesk-enroll needs a comma separated list of addr:port");
@@ -278,6 +314,10 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || revoke_client.is_some()
         || client_list
         || enroll.is_some()
+        || import_key.is_some()
+        || key_list
+        || key_forget.is_some()
+        || host_key.is_some()
         || push.is_some()
     {
         CONFIG.get_or_init(|| LandeskConfig {
@@ -303,6 +343,10 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             revoke_client,
             client_list,
             enroll,
+            import_key,
+            key_list,
+            key_forget,
+            host_key,
         });
     }
     Ok(())
@@ -1088,4 +1132,236 @@ fn push_key(
     }
     session.close();
     bail!("等待推送结果超时")
+}
+
+/// 描述性密钥文件名：`<role>-<host>-<yyyymmdd-HHMM>-<ip>`。
+///
+/// 密钥本身是长期身份，"主机名/时间/IP"只是**区分标签**（同一台机器可能有多把，
+/// 也可能由不同机器生成后拷过来）。生成的私钥与公钥共用这个前缀，扩展名分别为
+/// `.key` 与 `.pub`。取不到主机名/IP 时退化成 `unknown`，不让命名失败挡住生成。
+pub fn descriptive_key_name(role: &str) -> String {
+    let host = crate::whoami_hostname()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let host = host.trim_matches('-').to_lowercase();
+    let host = if host.is_empty() { "unknown".to_owned() } else { host };
+    let ip = local_ip_string().unwrap_or_else(|| "no-ip".to_owned());
+    let ip = ip.replace([':', '.'], "-");
+    let stamp = time_stamp();
+    format!("{role}-{host}-{stamp}-{ip}")
+}
+
+fn time_stamp() -> String {
+    // 不引入时间库：用系统时间换算成 UTC 的 yyyymmdd-HHMM。
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default() as i64;
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (hour, minute) = (rem / 3600, (rem % 3600) / 60);
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}")
+}
+
+/// 把"从 1970-01-01 起的天数"换算成公历年月日（Howard Hinnant 的算法）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
+}
+
+/// 本机在局域网里的地址（取第一个非回环的 IPv4）。只为命名服务，拿不到返回 None。
+fn local_ip_string() -> Option<String> {
+    use std::net::UdpSocket;
+    // 连接一个路由地址不会真的发包，只为让系统挑出出站接口的源地址。
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.168.255.255:9").ok()?;
+    socket.local_addr().ok().map(|addr| addr.ip().to_string())
+}
+
+/// 生成一对密钥，文件名带角色/主机/时间/IP；返回 (私钥路径, 公钥路径)。
+pub fn generate_named_key_pair(role: &str, dir: &std::path::Path) -> ResultType<(PathBuf, PathBuf)> {
+    let stem = descriptive_key_name(role);
+    let private_path = dir.join(format!("{stem}.key"));
+    let public_path = dir.join(format!("{stem}.pub"));
+    let keypair = keyauth::GlobalKeyPair::generate();
+    keypair.save(&private_path)?;
+    std::fs::write(
+        &public_path,
+        format!("{}\n", public_key_hex(&keypair.pk)),
+    )
+    .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", public_path.display()))?;
+    Ok((private_path, public_path))
+}
+
+/// client 侧的身份目录：`<exe 目录>/identities/`，一个文件一把私钥。
+pub fn identities_dir() -> PathBuf {
+    exe_dir().join("identities")
+}
+
+/// 列出可用的 client 身份（私钥文件）：先看 `identities/`，再看 exe 同目录的 `private.key`。
+pub fn list_identities() -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(identities_dir()) {
+        let mut keys: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("key") | Some("priv")
+                ) || path.file_stem().and_then(|s| s.to_str()) == Some("private")
+            })
+            .collect();
+        keys.sort();
+        found.extend(keys);
+    }
+    let legacy = exe_dir().join("private.key");
+    if legacy.is_file() {
+        found.push(legacy);
+    }
+    found
+}
+
+/// 导入一把 client 私钥到身份目录（复制，原文件保留）。
+pub fn import_identity(source: &std::path::Path) -> ResultType<PathBuf> {
+    if !source.is_file() {
+        bail!("{} 不存在", source.display());
+    }
+    // 读一次能解析，说明确实是一把合法私钥——别把随便一个文件搬进身份目录。
+    keyauth::GlobalKeyPair::load(source)?;
+    let dir = identities_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| hbb_common::anyhow::anyhow!("creating {}: {err}", dir.display()))?;
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "identity.key".to_owned());
+    let dest = dir.join(name);
+    if dest.exists() {
+        bail!("{} 已经导入过了", dest.display());
+    }
+    std::fs::copy(source, &dest)
+        .map_err(|err| hbb_common::anyhow::anyhow!("copying to {}: {err}", dest.display()))?;
+    Ok(dest)
+}
+
+/// 按名字（文件名或文件名主干）从身份目录里卸载一把私钥。
+pub fn forget_identity(name: &str) -> ResultType<PathBuf> {
+    let dir = identities_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        bail!("身份目录 {} 不存在", dir.display());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().map(|n| n.to_string_lossy().to_string());
+        let stem = path.file_stem().map(|n| n.to_string_lossy().to_string());
+        if file_name.as_deref() == Some(name) || stem.as_deref() == Some(name) {
+            std::fs::remove_file(&path).map_err(|err| {
+                hbb_common::anyhow::anyhow!("deleting {}: {err}", path.display())
+            })?;
+            return Ok(path);
+        }
+    }
+    bail!("身份目录里没有叫 {name} 的私钥")
+}
+
+/// 默认身份：`private.key` 优先（老用法），否则身份目录里唯一/最新的一把。
+pub fn default_identity() -> Option<PathBuf> {
+    let legacy = exe_dir().join("private.key");
+    if legacy.is_file() {
+        return Some(legacy);
+    }
+    let mut all = list_identities();
+    all.sort_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok());
+    all.pop()
+}
+
+/// 把"身份名或路径"解析成私钥路径：绝对/相对路径直接用，否则在身份目录里找。
+pub fn resolve_identity(name_or_path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(name_or_path);
+    if path.is_file() {
+        return Some(path);
+    }
+    let dir = identities_dir();
+    let direct = dir.join(name_or_path);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    for candidate in [format!("{name_or_path}.key"), format!("{name_or_path}.priv")] {
+        let path = dir.join(candidate);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// 服务端主机密钥的公钥与指纹（服务端生成，客户端钉它；私钥不出本机）。
+pub fn host_key_public() -> ResultType<(sign::PublicKey, String)> {
+    let (_, pk) = hbb_common::config::Config::get_key_pair();
+    let pk = sign::PublicKey::from_slice(&pk)
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("本机主机密钥无效（上游配置里的 key_pair）"))?;
+    let fingerprint = keyauth::fingerprint(&pk);
+    Ok((pk, fingerprint))
+}
+
+/// client 侧身份管理：导入 / 列出 / 卸载。
+pub fn run_identity_command(config: &LandeskConfig) -> ResultType<()> {
+    if config.key_list {
+        let identities = list_identities();
+        if identities.is_empty() {
+            println!("还没有任何 client 身份（私钥）");
+            println!("先跑：landesk-server.exe --landesk-genkey   # 或 --landesk-import-key <路径>");
+        } else {
+            println!("可用身份（{} 把）：", identities.len());
+            for path in identities {
+                let public = keyauth::GlobalKeyPair::load(&path)
+                    .map(|kp| public_key_hex(&kp.pk))
+                    .unwrap_or_else(|_| "<无法解析>".to_owned());
+                println!("  {}  {}", path.display(), &public[..public.len().min(16)]);
+            }
+        }
+        return Ok(());
+    }
+    if let Some(source) = &config.import_key {
+        let dest = import_identity(source)?;
+        println!("已导入身份：{}", dest.display());
+        return Ok(());
+    }
+    if let Some(name) = &config.key_forget {
+        let removed = forget_identity(name)?;
+        println!("已卸载身份：{}", removed.display());
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// 服务端主机密钥：打印公钥与指纹，可选导出公钥文件给 client 参考。
+///
+/// 私钥留在本机（上游 `Config::get_key_pair()` 管理），这里只处理公钥。
+/// 注意：重新生成主机密钥会让所有 client 的 TOFU 指纹失配，必须逐台重新核验。
+pub fn run_host_key_command(config: &LandeskConfig) -> ResultType<()> {
+    if config.host_key.is_none() {
+        return Ok(());
+    }
+    let (pk, fingerprint) = host_key_public()?;
+    println!("本机主机公钥：{}", public_key_hex(&pk));
+    println!("本机主机指纹：{fingerprint}");
+    println!("（client 首次连接会记下这个指纹，核对后用 --landesk-book-verify 标为已验证）");
+    if let Some(Some(path)) = &config.host_key {
+        std::fs::write(path, format!("{}\n", public_key_hex(&pk)))
+            .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", path.display()))?;
+        println!("已导出公钥文件：{}", path.display());
+    }
+    Ok(())
 }

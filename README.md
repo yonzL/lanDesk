@@ -145,7 +145,16 @@ landesk-server.exe --install-service
 
 服务的 `--server` 子进程启动时会读 `landesk.json`，所以不需要把参数写进服务命令行；不带任何参数的 `landesk-server.exe --server` 也会读它。`landesk.json` 里是 `listen_port`、`auth_keys`（允许接入的 Master 公钥列表）与可选的 `allowed_networks`。
 
-**多台 Master，每台一把密钥：** 每台 Master 用 `--landesk-genkey` 生成自己的密钥对，把它的 `public.key` 分发到各台 Service，然后在 Service 上加入（不需要重启服务，下一次连接就生效）：
+**多台 Master，每台一把密钥：** 每台 Master 用自己的身份（私钥）生成公钥，把公钥分发到各台 Service，然后在 Service 上加入（不需要重启服务，下一次连接就生效）。命名带角色-主机-时间-IP 便于区分：
+
+```bash
+landesk-server.exe --landesk-genkey                      # 生成 master-<主机>-<时间>-<IP>.key + .pub
+landesk-server.exe --landesk-key-list                    # 看本机有哪些身份
+landesk-server.exe --landesk-import-key other.key        # 导入另一把身份
+landesk-server.exe --landesk-key-forget master-...       # 卸载一把
+```
+
+服务端侧（**只导入公钥**，私钥永远不出 Master 本机）：
 
 ```bash
 landesk-server.exe --landesk-allow-client <公钥十六进制或 public.key 路径>
@@ -155,7 +164,16 @@ landesk-server.exe --landesk-client-list                                    # �
 
 旧的单值写法 `auth_key: "<hex>"` 仍然可读，视为列表里的一个元素（那就是“一把钥匙开全网”的形态）。
 
-**一步把新 Master 加进多台 Service：** 服务端会自动建好公钥目录 `<exe 目录>andesk.dients`，里面一个文件一把公钥。在 Master 上执行一次即可（它会先问对端这个目录在哪，再用文件会话把 `public.key` 推过去）：
+**服务端的主机身份：** 服务端自己有一对主机密钥（上游管理，私钥不出本机），Master 首次连接时钉住它、用来判断“对面确实是那台机器”。打印或导出公钥：
+
+```bash
+landesk-server.exe --landesk-host-key                    # 打印主机公钥与指纹
+landesk-server.exe --landesk-host-key host.pub           # 同时导出公钥文件
+```
+
+注意：重新生成主机密钥会让所有 Master 已钉的指纹失配，必须逐台重新核对——所以它应该是安装期一次性的动作。
+
+**一步把新 Master 加进多台 Service：** 服务端会自动建好公钥目录 `<exe 目录>/landesk.d/clients/`，里面一个文件一把公钥。在 Master 上执行一次即可（它会先问对端这个目录在哪，再用文件会话把公钥推过去）：
 
 ```bash
 landesk-server.exe --landesk-enroll 192.168.99.191:21118,192.168.99.239:21118 --landesk-key master.key

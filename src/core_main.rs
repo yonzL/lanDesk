@@ -108,6 +108,18 @@ pub fn core_main() -> Option<CoreMainAction> {
                 Err(err) => Some(CoreMainAction::ExitFailure(err)),
             };
         }
+        if config.host_key.is_some() {
+            return match crate::landesk::run_host_key_command(config) {
+                Ok(()) => None,
+                Err(err) => Some(CoreMainAction::ExitFailure(err)),
+            };
+        }
+        if config.key_list || config.import_key.is_some() || config.key_forget.is_some() {
+            return match crate::landesk::run_identity_command(config) {
+                Ok(()) => None,
+                Err(err) => Some(CoreMainAction::ExitFailure(err)),
+            };
+        }
         if config.enroll.is_some() {
             return match crate::landesk::run_enroll(config) {
                 Ok(()) => None,
@@ -154,10 +166,15 @@ pub fn core_main() -> Option<CoreMainAction> {
 
     // landesk 的 Master 拨号模式：连一次、做完密钥证明、把指纹变化落盘，然后退出。
     if let Some(path) = crate::landesk::config().and_then(|config| config.genkey.clone()) {
-        let keypair = hbb_common::keyauth::GlobalKeyPair::generate();
-        return match crate::landesk::generate_key_pair(&path) {
-            Ok(public_path) => {
-                println!("private key: {}", path.display());
+        // 路径为空 = 用描述性名字（角色-主机-时间-IP）生成到 exe 同目录。
+        let generated = if path.as_os_str().is_empty() {
+            crate::landesk::generate_named_key_pair("master", &crate::landesk::exe_dir())
+        } else {
+            crate::landesk::generate_key_pair(&path).map(|public| (path.clone(), public))
+        };
+        return match generated {
+            Ok((private_path, public_path)) => {
+                println!("private key: {}", private_path.display());
                 println!("public key:  {}", public_path.display());
                 println!(
                     "\n把 {} 拷到被控机，安装时用它：\n  landesk-server.exe --landesk-save-config --landesk-listen 21118 --landesk-auth-key-file {}  ",

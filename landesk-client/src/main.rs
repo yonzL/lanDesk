@@ -164,10 +164,27 @@ impl App {
         tree
     }
 
+    /// 这台机器用哪把私钥：条目指定 → 默认身份 → 启动时的 key 路径。
+    fn key_for(&self, addr: &str) -> Option<PathBuf> {
+        if let Some(name) = self.book.get(addr).and_then(|entry| entry.key.as_deref()) {
+            if let Some(path) = librustdesk::landesk::resolve_identity(name) {
+                return Some(path);
+            }
+        }
+        if self.key_path.is_file() {
+            return Some(self.key_path.clone());
+        }
+        librustdesk::landesk::default_identity()
+    }
+
     fn connect(&mut self, addr: String, control: bool) {
         if self.session.is_some() {
             return;
         }
+        let Some(key) = self.key_for(&addr) else {
+            self.log.push("No client identity: generate one or import a key first".into());
+            return;
+        };
         self.log.push(if control {
             format!("Connecting to {addr} (take control)…")
         } else {
@@ -176,7 +193,7 @@ impl App {
         match librustdesk::landesk::session::start(
             addr.clone(),
             self.book_path.clone(),
-            self.key_path.clone(),
+            key,
             control,
         ) {
             Ok(session) => {
@@ -224,9 +241,15 @@ impl App {
             );
             ui.small("Generate a key pair here, then copy public.key to every service machine.");
             if ui.button("Generate key pair").clicked() {
-                match librustdesk::landesk::generate_key_pair(&self.key_path) {
-                    Ok(public) => self.log.push(format!(
-                        "Generated {} — copy it to the service machine(s)",
+                // 生成到身份目录，文件名带主机/时间/IP，便于多把并存时区分。
+                let dir = librustdesk::landesk::identities_dir();
+                match std::fs::create_dir_all(&dir)
+                    .map_err(|err| hbb_common::anyhow::anyhow!("creating {}: {err}", dir.display()))
+                    .and_then(|_| librustdesk::landesk::generate_named_key_pair("master", &dir))
+                {
+                    Ok((private, public)) => self.log.push(format!(
+                        "Generated {} — copy {} to the service machine(s)",
+                        private.display(),
                         public.display()
                     )),
                     Err(err) => self.log.push(format!("{err:#}")),
@@ -429,8 +452,10 @@ impl App {
         }
         // egui 0.31 里“窗口是否启用 IME”只看 `platform_output.ime` 是否为 Some（egui-winit 的
         // `allow_ime = ime.is_some()`），而只有 TextEdit 会设置它。远端画面不是 TextEdit，
-        // 不自己置位的话输入法在本窗口里根本无法组合中文。文本框获得焦点时让给它。
-        if ui.memory(|m| m.focused()).is_none() {
+        // 不自己置位的话输入法在本窗口里根本无法组合中文（点地址簿输入框能打、点画面就变英文）。
+        // 只有“侧边栏文本框持有焦点”时才让位，否则我们总是把 IME 指向画面。
+        let text_field_focused = ui.memory(|m| m.focused()).is_some_and(|id| !response.has_focus() && id != response.id);
+        if !text_field_focused {
             ui.ctx().output_mut(|o| {
                 o.ime = Some(egui::output::IMEOutput {
                     rect,
@@ -994,6 +1019,20 @@ impl eframe::App for App {
                         ui.label("addr:port");
                         ui.text_edit_singleline(&mut draft.addr);
                         ui.end_row();
+                        ui.label("Identity");
+                        let mut key = draft.key.clone().unwrap_or_default();
+                        if ui
+                            .text_edit_singleline(&mut key)
+                            .on_hover_text("client 私钥（身份名或路径）；留空 = 默认身份")
+                            .changed()
+                        {
+                            draft.key = if key.trim().is_empty() {
+                                None
+                            } else {
+                                Some(key.trim().to_owned())
+                            };
+                        }
+                        ui.end_row();
                     });
                 self.editing = Some(draft.clone());
                 ui.add_space(6.0);
@@ -1035,6 +1074,17 @@ impl eframe::App for App {
             ui.label(format!("Address: {}", entry.addr));
             let (state, can_verify) = self.pin_state(&addr);
             ui.label(format!("Host fingerprint: {state}"));
+            let identity = match &entry.key {
+                Some(name) => match librustdesk::landesk::resolve_identity(name) {
+                    Some(path) => format!("{} ({})", name, path.display()),
+                    None => format!("{} — NOT FOUND in identities", name),
+                },
+                None => match librustdesk::landesk::default_identity() {
+                    Some(path) => format!("default ({})", path.display()),
+                    None => "none — generate or import a key first".to_owned(),
+                },
+            };
+            ui.label(format!("Identity: {identity}"));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui

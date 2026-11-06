@@ -21,6 +21,9 @@ pub struct Entry {
     pub name: String,
     /// `主机:端口`，与指纹库的键一致。
     pub addr: String,
+    /// 连这台机器时用哪把 client 私钥（身份名或路径）；`None` 表示用默认身份。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -132,7 +135,13 @@ impl AddressBook {
     /// 按条目列表合并：`地址:端口` 已存在就覆盖，否则追加。返回新增/覆盖的条数。
     pub fn merge_entries(&mut self, entries: impl IntoIterator<Item = Entry>) -> usize {
         let mut count = 0;
-        for entry in entries {
+        for mut entry in entries {
+            // CSV 里通常不写身份列：不要把已有的身份信息覆盖成“未指定”。
+            if entry.key.is_none() {
+                if let Some(existing) = self.get(&entry.addr) {
+                    entry.key = existing.key.clone();
+                }
+            }
             self.upsert(entry);
             count += 1;
         }
@@ -141,14 +150,15 @@ impl AddressBook {
 
     /// 导出为 CSV：首行是表头，之后每行一个条目。
     pub fn to_csv(&self) -> String {
-        let mut out = String::from("组,子组,显示名,地址\n");
+        let mut out = String::from("组,子组,显示名,地址,身份\n");
         for entry in &self.entries {
             out.push_str(&format!(
-                "{},{},{},{}\n",
+                "{},{},{},{},{}\n",
                 csv_field(&entry.group),
                 csv_field(&entry.subgroup),
                 csv_field(&entry.name),
                 csv_field(&entry.addr),
+                csv_field(entry.key.as_deref().unwrap_or("")),
             ));
         }
         out
@@ -223,6 +233,7 @@ fn parse_csv_entries(text: &str) -> ResultType<Vec<Entry>> {
     };
     let group_column = column(&["组", "group"]);
     let subgroup_column = column(&["子组", "subgroup", "sub"]);
+    let key_column = column(&["身份", "key", "identity"]);
     let name_column = column(&["显示名", "name", "display"]);
     let pick = |row: &[String], index: Option<usize>| -> String {
         index
@@ -242,11 +253,13 @@ fn parse_csv_entries(text: &str) -> ResultType<Vec<Entry>> {
                 offset + 2
             );
         }
+        let key = pick(row, key_column);
         entries.push(Entry {
             group: pick(row, group_column),
             subgroup: pick(row, subgroup_column),
             name: pick(row, name_column),
             addr,
+            key: if key.is_empty() { None } else { Some(key) },
         });
     }
     Ok(entries)
@@ -269,6 +282,7 @@ mod tests {
             subgroup: "开发组".into(),
             name: name.into(),
             addr: addr.into(),
+            key: None,
         }
     }
 
@@ -332,6 +346,7 @@ mod tests {
             subgroup: "开发组".into(),
             name: "工位-01".into(),
             addr: "10.0.0.5:21118".into(),
+            key: None,
         });
         let csv = book.to_csv();
         let mut imported = AddressBook::default();
@@ -410,5 +425,45 @@ mod tests {
         std::fs::write(&source, "{\"entries\":[],\"pins\":{\"hosts\":{}}}").expect("write");
         assert!(AddressBook::import(&source, &target).is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn entry(addr: &str, key: Option<&str>) -> Entry {
+        Entry {
+            group: "g".into(),
+            subgroup: "s".into(),
+            name: "n".into(),
+            addr: addr.into(),
+            key: key.map(|k| k.to_owned()),
+        }
+    }
+
+    #[test]
+    fn csv_keeps_the_identity_column() {
+        let mut book = AddressBook::default();
+        book.upsert(entry("10.0.0.5:21118", Some("master-a")));
+        let csv = book.to_csv();
+        let mut restored = AddressBook::default();
+        restored.merge_csv(&csv).expect("merge");
+        assert_eq!(
+            restored.get("10.0.0.5:21118").and_then(|e| e.key.clone()),
+            Some("master-a".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_csv_without_the_identity_column_keeps_the_existing_one() {
+        let mut book = AddressBook::default();
+        book.upsert(entry("10.0.0.5:21118", Some("master-a")));
+        // 老格式：没有身份列
+        book.merge_csv("组,子组,显示名,地址\ng,s,n2,10.0.0.5:21118\n")
+            .expect("merge");
+        let entry = book.get("10.0.0.5:21118").expect("entry");
+        assert_eq!(entry.name, "n2");
+        assert_eq!(entry.key.as_deref(), Some("master-a"));
     }
 }
