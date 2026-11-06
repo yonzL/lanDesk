@@ -23,7 +23,6 @@ use crate::{
     common::{is_server, CheckTestNatType},
     privacy_mode,
     privacy_mode::PrivacyModeState,
-    rendezvous_mediator::RendezvousMediator,
     trusted_devices::authority,
     ui_interface::{get_local_option, set_local_option},
 };
@@ -829,7 +828,6 @@ impl Drop for CheckIfRestart {
             if allow_insecure_tls_fallback_changed {
                 hbb_common::tls::reset_tls_cache();
             }
-            RendezvousMediator::restart();
         }
         if self.audio_input != Config::get_option("audio-input") {
             crate::audio_service::restart();
@@ -925,8 +923,7 @@ async fn handle(data: Data, stream: &mut Connection) {
                 } else {
                     Config::set_socks(Some(data));
                 }
-                RendezvousMediator::restart();
-                log::info!("socks updated");
+                    log::info!("socks updated");
             }
         },
         Data::SocksWs(s) => match s {
@@ -1154,13 +1151,8 @@ async fn handle(data: Data, stream: &mut Connection) {
                     .await
             );
         }
-        Data::TestRendezvousServer => {
-            crate::test_rendezvous_server();
-        }
-        Data::Deployed => {
-            crate::rendezvous_mediator::NEEDS_DEPLOY.store(false, Ordering::SeqCst);
-            crate::rendezvous_mediator::RendezvousMediator::restart();
-        }
+        // 这个构建没有 hbbs：不发任何探测/注册请求。
+        Data::TestRendezvousServer => {}
         #[cfg(feature = "flutter")]
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         Data::SwitchSidesRequest(id) => {
