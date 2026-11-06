@@ -535,14 +535,17 @@ impl App {
                         continue;
                     }
                     for ch in text.chars() {
-                        let mut evt = KeyEvent::new();
-                        evt.set_chr(ch as u32);
-                        evt.down = true;
-                        evt.press = true;
-                        evt.mode = KeyboardMode::Legacy.into();
-                        // 远端靠这个字段判断“这是不是组合键”（has_hotkey_modifiers）。
-                        evt.modifiers = held_modifiers(alt, ctrl, shift);
-                        session.send_key(&evt);
+                        // 与上游一致：一个字符发一对 down/up，否则远端会把这个键留在按下状态。
+                        for down in [true, false] {
+                            let mut evt = KeyEvent::new();
+                            evt.set_chr(ch as u32);
+                            evt.down = down;
+                            evt.press = down;
+                            evt.mode = KeyboardMode::Legacy.into();
+                            // 远端靠这个字段判断“这是不是组合键”（has_hotkey_modifiers）。
+                            evt.modifiers = held_modifiers(alt, ctrl, shift);
+                            session.send_key(&evt);
+                        }
                     }
                 }
                 egui::Event::Key {
