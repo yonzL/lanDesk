@@ -62,24 +62,7 @@ pub fn configured() -> Vec<String> {
 
 /// 解析后的白名单；配置有问题时记一条 warn 并退回默认值，不因此拒绝所有连接。
 pub fn load() -> Vec<IpNet> {
-    let configured = configured();
-    match parse(&configured) {
-        Ok(nets) => {
-            if configured.is_empty() {
-                log::info!(
-                    "landesk: only private networks may connect ({} default ranges)",
-                    nets.len()
-                );
-            } else {
-                log::info!("landesk: allowed source networks: {}", configured.join(","));
-            }
-            nets
-        }
-        Err(err) => {
-            log::warn!("landesk: {err}; falling back to private ranges only");
-            parse(&[]).unwrap_or_default()
-        }
-    }
+    parse_or_default(&configured())
 }
 
 #[cfg(test)]
@@ -126,5 +109,26 @@ mod tests {
     fn invalid_entry_is_an_error() {
         assert!(parse(&["192.168.1.1".to_owned()]).is_err());
         assert!(parse(&["not-a-network".to_owned()]).is_err());
+    }
+}
+
+/// 与 `load()` 同样的解析，但接受一份显式的字符串列表（监督循环用它，以便配置变更立即生效）。
+pub fn parse_or_default(configured: &[String]) -> Vec<IpNet> {
+    match parse(configured) {
+        Ok(nets) => {
+            if configured.iter().all(|value| value.trim().is_empty()) {
+                log::info!(
+                    "landesk: only private networks may connect ({} default ranges)",
+                    nets.len()
+                );
+            } else {
+                log::info!("landesk: allowed source networks: {}", configured.join(","));
+            }
+            nets
+        }
+        Err(err) => {
+            log::warn!("landesk: {err}; falling back to private ranges only");
+            parse(&[]).unwrap_or_default()
+        }
     }
 }

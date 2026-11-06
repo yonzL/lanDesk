@@ -72,6 +72,8 @@ pub struct LandeskConfig {
     pub key_forget: Option<String>,
     /// 服务端：打印本机主机公钥与指纹；给出路径时同时导出公钥文件。
     pub host_key: Option<Option<PathBuf>>,
+    /// 来源白名单是不是命令行给的：给了就以命令行为准，文件改动不覆盖它。
+    pub allowed_networks_from_cli: bool,
     /// 监听参数是不是从 `landesk.json` 读来的：监督循环只在这为 true 时重读文件，
     /// 否则命令行给的端口会被文件覆盖（测试与临时实例就靠命令行）。
     pub listen_spec_from_file: bool,
@@ -274,6 +276,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     // 这一条让“装成服务、开机自启”成立：服务派生的 --server 子进程不带这些参数。
     // 必须排在 public.key 自动读取**之前**：那个文件常年存在，先读它会让整份 JSON 被跳过。
     let mut listen_spec_from_file = false;
+    let allowed_networks_from_cli = !allowed_networks.is_empty();
     if listen_port.is_none() && auth_pks.is_empty() {
         if let Some((port, keys, nets)) = load_config_file() {
             listen_spec_from_file = port.is_some();
@@ -338,6 +341,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             push_to,
             push_files,
             allowed_networks,
+            allowed_networks_from_cli,
             listen_spec_from_file,
             allow_client,
             revoke_client,
@@ -457,11 +461,41 @@ pub fn run_doctor() -> ResultType<()> {
             } else {
                 String::new()
             };
+            // 状态文件是“上次写下的”：先交叉检查它跟当前配置是否一致，再实际探一下端口。
+            // 否则一个残留文件会被当成“正在监听”报成 ok。
+            let configured_port = config.and_then(|config| config.listen_port);
+            if let Some(port) = configured_port {
+                if port != status.port {
+                    println!(
+                        "  [warn] 状态文件写的是端口 {}，而配置是 {}——这份状态可能来自旧配置",
+                        status.port, port
+                    );
+                }
+            }
             match status.state.as_str() {
-                "listening" => println!(
-                    "  [ ok ] 服务正在监听端口 {}{since}",
-                    status.port
-                ),
+                "listening" => {
+                    // 真探一下：监听者（服务）会接受本地连接；没人在听则 connect 失败。
+                    let addr = format!("127.0.0.1:{}", status.port);
+                    let reachable = addr
+                        .parse()
+                        .ok()
+                        .and_then(|addr| {
+                            std::net::TcpStream::connect_timeout(
+                                &addr,
+                                std::time::Duration::from_millis(500),
+                            )
+                            .ok()
+                        })
+                        .is_some();
+                    if reachable {
+                        println!("  [ ok ] 服务正在监听端口 {}{since}", status.port);
+                    } else {
+                        println!(
+                            "  [warn] 状态文件写着 listening（端口 {}{since}），但现在连不上：服务可能已退出，状态陈旧",
+                            status.port
+                        );
+                    }
+                }
                 "failed" => println!(
                     "  [fail] 服务没能监听端口 {}：{}{since}",
                     status.port, status.error
@@ -837,9 +871,15 @@ pub fn reload_listen_spec() -> Option<ListenSpec> {
         .as_ref()
         .and_then(|file| file.listen_port)
         .unwrap_or(port);
-    let allowed_networks = match file {
-        Some(file) if !file.allowed_networks.is_empty() => file.allowed_networks,
-        _ => cached.allowed_networks.clone(),
+    // 命令行给过白名单就永远以它为准：`take_from_args` 已经保证了 CLI 优先，
+    // 这里再挡一下，避免文件在运行期把 CLI 的列表顶掉。
+    let allowed_networks = if cached.allowed_networks_from_cli {
+        cached.allowed_networks.clone()
+    } else {
+        match file {
+            Some(file) if !file.allowed_networks.is_empty() => file.allowed_networks,
+            _ => cached.allowed_networks.clone(),
+        }
     };
     Some(ListenSpec {
         port,
@@ -865,14 +905,26 @@ pub fn status_file_path() -> PathBuf {
 /// 服务端没有界面，状态只能靠这份文件（以及日志）让外部——`--landesk-doctor`、运维、界面——看到。
 pub fn publish_listen_status(state: &str, port: u16, error: &str) {
     let previous = read_listen_status();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    // `since` 表示“这个状态从什么时候开始”，所以状态没变时（例如每秒重试失败）保留旧值，
+    // 否则它只会反映最后一次尝试。
+    let unchanged = previous
+        .as_ref()
+        .map(|p| (p.state.as_str(), p.port, p.error.as_str()) == (state, port, error))
+        .unwrap_or(false);
+    let since = if unchanged {
+        previous.as_ref().map(|p| p.since).unwrap_or(now)
+    } else {
+        now
+    };
     let status = ListenStatus {
         state: state.to_owned(),
         port,
         error: error.to_owned(),
-        since: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_default(),
+        since,
     };
     if let Ok(text) = serde_json::to_string_pretty(&status) {
         if let Err(err) = std::fs::write(status_file_path(), text) {

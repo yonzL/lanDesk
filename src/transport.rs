@@ -31,7 +31,10 @@ pub async fn supervise() -> ResultType<()> {
         let listener = match tcp::new_listener(("0.0.0.0", spec.port), true).await {
             Ok(listener) => listener,
             Err(err) => {
-                log::warn!(
+                // 端口被长期占用时这条会每秒触发：节流，否则一天能写八万多行。
+                hbb_common::throttled_log!(
+                    std::time::Duration::from_secs(60),
+                    warn,
                     "landesk: cannot listen on port {}: {err}; retrying",
                     spec.port
                 );
@@ -42,7 +45,9 @@ pub async fn supervise() -> ResultType<()> {
         };
         log::info!("landesk: service listening on {}", listener.local_addr()?);
         crate::landesk::publish_listen_status("listening", spec.port, "");
-        let allowed = crate::landesk::net::load();
+        // 白名单必须来自**这一轮的 spec**，否则“改 allowed_networks → 重绑”只是重绑了端口，
+        // 执行层用的仍是启动时那份（CONFIG 是 OnceLock，永远不会变）。
+        let allowed = crate::landesk::net::parse_or_default(&spec.allowed_networks);
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let handle = tokio::spawn(serve(listener, allowed, server.clone(), stop_rx));
         // 每秒看一次配置签名；变了就让 accept 循环退出，回到顶部用新配置重绑。
@@ -52,9 +57,8 @@ pub async fn supervise() -> ResultType<()> {
             match crate::landesk::reload_listen_spec() {
                 Some(current) if current != spec => {
                     log::info!(
-                        "landesk: listen settings changed (port {} -> {}), rebinding",
-                        spec.port,
-                        current.port
+                        "landesk: listen settings changed ({}), rebinding",
+                        describe_spec_change(&spec, &current)
                     );
                     break;
                 }
@@ -216,4 +220,32 @@ fn to_array_32(bytes: &[u8]) -> Option<[u8; 32]> {
     }
     out.copy_from_slice(bytes);
     Some(out)
+}
+
+/// 把"监听配置变了什么"说清楚：只改白名单时不该打印 `端口 31998 -> 31998`。
+fn describe_spec_change(old: &crate::landesk::ListenSpec, new: &crate::landesk::ListenSpec) -> String {
+    let mut parts = Vec::new();
+    if old.port != new.port {
+        parts.push(format!("port {} -> {}", old.port, new.port));
+    }
+    if old.allowed_networks != new.allowed_networks {
+        parts.push(format!(
+            "allowlist {} -> {}",
+            summarize_networks(&old.allowed_networks),
+            summarize_networks(&new.allowed_networks)
+        ));
+    }
+    if parts.is_empty() {
+        "no visible difference".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn summarize_networks(list: &[String]) -> String {
+    if list.iter().all(|value| value.trim().is_empty()) {
+        "default private ranges".to_owned()
+    } else {
+        list.join(",")
+    }
 }
