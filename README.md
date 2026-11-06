@@ -62,18 +62,23 @@ CI（`.github/workflows/ci.yml`）在 `windows-latest` 上只跑第一条；主 
 
 ### Windows 构建工具（比网络更容易踩）
 
-两个与代码无关、但会让人卡一天的环境事实：
+三个与代码无关、但会让人卡一天的环境事实：
 
-1. **需要 Visual Studio 的 “使用 C++ 的桌面开发” 工作负载 _加上 Windows SDK 本体_。** 只有 `VCToolsMSVC` 目录不够：
-   `VCAuxiliaryBuildvcvars64.bat` 与 CMake 都来自这个工作负载。缺了它时 `cc-rs` 的构建脚本会报
-   `Failed to find tool. Is cl.exe installed?`，链接期报 `LNK1181: cannot open input file 'kernel32.lib'`，
-   而 `flutter build windows` 会报 `Unable to find suitable Visual Studio toolchain`。
-2. **Git Bash 的 `link.exe` 会抢在 MSVC 的 linker 前面。** `C:Program FilesGitSrinink.exe`
-   是 coreutils 的 `link`，被 rustc 当成链接器调用时报 `link: extra operand`。把 MSVC 的
-   `…VCToolsMSVC<ver>inHostx64d` 放到 PATH 最前面，或在 vcvars 环境里构建。
-
-另外主 crate 的首次构建会用到 `VCPKG_ROOT` 与 `LIBCLANG_PATH`（见下）。
-
+1. **需要 Visual Studio 的「使用 C++ 的桌面开发」工作负载，外加 Windows SDK 本体。**
+   只有 `VC\Tools\MSVC` 目录不够：`vcvars64.bat` 与 CMake 来自工作负载，而 `windows.h` /
+   `kernel32.lib` / `stddef.h` 来自 SDK。
+   - 缺工作负载：`cc-rs` 报 `Failed to find tool. Is cl.exe installed?`。
+   - 缺 SDK（更隐蔽，`cl.exe` 在、`vcvars` 也能跑）：编译期报
+     `fatal error C1083: Cannot open include file: 'windows.h'`，链接期报
+     `LNK1181: cannot open input file 'kernel32.lib'`。
+   - SDK 是否就位的判定：`Test-Path "C:\Program Files (x86)\Windows Kits\10\Include\*\um\windows.h"`。
+   - `flutter build windows` 在同样状态下报 `Unable to find suitable Visual Studio toolchain`
+     或 `Unable to locate a Windows 10 SDK`。
+2. **Git Bash 的 `link.exe` 会抢在 MSVC 的 linker 前面。**
+   `C:\Program Files\Git\usr\bin\link.exe` 是 coreutils 的 `link`，被 rustc 当成链接器调用时报
+   `link: extra operand`。做法：在 vcvars 环境里构建，或把 MSVC 的
+   `…\VC\Tools\MSVC\<ver>\bin\Hostx64\x64` 放到 PATH 最前面。
+3. **主 crate 的首次构建需要 `VCPKG_ROOT` 与 `LIBCLANG_PATH`**（见下面的网络与依赖说明）。
 ### 大陆网络下的前置条件
 
 依赖图里有三类在大陆直连不通的来源：crates.io、GitHub 上的 git 源、以及 `*.googlesource.com`
