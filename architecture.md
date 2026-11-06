@@ -114,10 +114,16 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 - `libs/scrap`、`libs/enigo`、`libs/clipboard`、`libs/hbb_common`——采集、注入、剪贴板、协议与密码学原语。
 - `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——上游的 Master 界面。**landesk 不用它**：见下方“Master 界面”一节。
 
-移除：
+移除（**已落地**，2026-11）：
 
-- `rendezvous_mediator.rs`、`hbbs_http/`、`custom_server.rs`、`auth_2fa.rs`、`trusted_devices`——ID 注册、打洞、服务器 API、2FA、旧信任机制。
-- `updater.rs`、`updater/`、`update_metadata*`、`update_hash.rs`、`manual_update.rs`——任何自动更新路径。
+- `rendezvous_mediator.rs`（1844 行）、`hbbs_http/`（1844 行）、`updater.rs` + `updater/` + `manual_update.rs`（846 行）——ID 注册、打洞、中继、服务器 API、自动更新，全部已从树中删除。
+- 客户端的直连 IP / 域名 / rendezvous 回退路径：`Client::start` 现在只接受会话层登记过的目标，其余直接报错。
+- 启动时的 `api.rustdesk.com` 版本检查（`check_software_update` 及响应解析）。
+- 仍然保留但**不可达**的部分：`flutter_ffi.rs` 里 6 处更新调用与 `ui_interface.rs` 的 OIDC 登录——它们只在 `--features flutter` 下编译，等 Flutter 那一步一并清理。
+
+拟删（未做）：
+
+- `custom_server.rs`、`auth_2fa.rs`、`trusted_devices`——服务器 API、2FA、旧信任机制。
 - `ui_cm_interface.rs`——主界面里的 ID 连接框，由地址簿取代。
 - `lan.rs`、`kcp_stream.rs`、`port_forward*`、`privacy_mode`、`virtual_display_manager`、`whiteboard`——发现、KCP、端口转发、隐私模式、虚拟屏、白板，均不在能力清单内。
 
@@ -161,7 +167,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 ## 不变量
 
-- **无出站**：Service 除应答外不发起任何连接；任何 hbbs/hbbr/updater 调用都是缺陷。landesk 模式下以跳过 `RendezvousMediator` 落实，日志里应出现 `landesk: skipping the rendezvous mediator`。
+- **无出站**：Service 除应答外不发起任何连接。已经**从代码上**落实：`rendezvous_mediator`、`hbbs_http`、`updater` 与启动时的版本检查都已删除；客户端也只连会话层登记过的目标（其余直接报错）。冒烟脚本里仍有“无出站”的断言作为第二道防线。
 - **证明先于会话**：`AuthProof` 验证通过之前，Service 不接受任何会话消息；拒绝日志恰好一行。
 - **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中；保护靠文件系统 ACL（DPAPI 为可选加固，尚未实现）。
 - **并发不仲裁**：与上游一致，多个已认证连接都能操作，后写入者生效；“只看”是连接时的声明，服务端只记日志。
