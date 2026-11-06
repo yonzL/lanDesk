@@ -856,7 +856,8 @@ impl eframe::App for App {
                     }
                     // 画质与帧率：真实网络里这决定好不好用。
                     ui.separator();
-                    ui.label("Quality:");                    for (value, label) in [
+                    ui.label("Quality:");
+                    for (value, label) in [
                         ("low", "low"),
                         ("balanced", "balanced"),
                         ("best", "best"),
@@ -870,19 +871,38 @@ impl eframe::App for App {
                         }
                     }
                     if self.quality == "custom" {
-                        ui.label(" fps:");
-                        for fps in [15, 30, 60] {
+                        // 上游的自定义画质是“百分比 + 帧率上限”两个参数，缺一不可。
+                        let mut percentage = self
+                            .session
+                            .as_ref()
+                            .map(|session| session.custom_image_quality())
+                            .unwrap_or(50);
+                        ui.horizontal(|ui| {
+                            ui.label("Custom quality:");
                             if ui
-                                .selectable_label(self.fps == fps, fps.to_string())
-                                .clicked()
-                                && self.fps != fps
+                                .add(egui::Slider::new(&mut percentage, 10..=100).suffix("%"))
+                                .changed()
                             {
-                                self.fps = fps;
                                 if let Some(session) = &self.session {
-                                    session.set_fps(fps);
+                                    session.set_custom_image_quality(percentage);
                                 }
                             }
-                        }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("FPS cap:");
+                            for fps in [15, 30, 60] {
+                                if ui
+                                    .selectable_label(self.fps == fps, fps.to_string())
+                                    .clicked()
+                                    && self.fps != fps
+                                {
+                                    self.fps = fps;
+                                    if let Some(session) = &self.session {
+                                        session.set_fps(fps);
+                                    }
+                                }
+                            }
+                        });
                     }
                     // 编码器：上游的 codec-preference（下一次连接生效）。
                     ui.separator();

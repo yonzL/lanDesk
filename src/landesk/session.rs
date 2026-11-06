@@ -106,7 +106,10 @@ impl InvokeUiSession for LandeskUi {
     }
     fn on_connected(&self, _conn_type: ConnType) {}
     fn update_privacy_mode(&self) {}
-    fn set_permission(&self, _name: &str, _value: bool) {}
+    fn set_permission(&self, name: &str, value: bool) {
+        // 对端下发的权限变化：声音/剪贴板/文件这些直接决定能不能用，记一条便于排查。
+        log::info!("landesk: peer permission {name} = {value}");
+    }
     fn close_success(&self) {}
     fn update_quality_status(&self, _qs: QualityStatus) {}
     fn set_connection_type(&self, _is_secured: bool, _direct: bool, _stream_type: &str) {}
@@ -339,6 +342,19 @@ impl SessionHandle {
     /// 帧率上限；只在画质为 `custom` 时单独生效（上游的语义）。
     pub fn set_fps(&self, fps: i32) {
         self.session.set_custom_fps(fps);
+    }
+
+    /// 自定义画质的百分比（上游 `custom_image_quality`，10–100）。
+    pub fn custom_image_quality(&self) -> i32 {
+        self.session
+            .get_custom_image_quality()
+            .first()
+            .copied()
+            .unwrap_or(50)
+    }
+
+    pub fn set_custom_image_quality(&self, value: i32) {
+        self.session.save_custom_image_quality(value);
     }
 
     pub fn send_mouse(
