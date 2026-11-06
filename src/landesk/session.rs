@@ -585,6 +585,10 @@ fn build_session(
         last_progress: Default::default(),
     };
     *session.ui_handler.session.lock().unwrap() = Some(session.clone());
+    // 上游的 Flutter / Sciter 会话在构造时把这个置为 true；`Session::default()` 是 false。
+    // 为 false 时客户端认为"对端不允许文件传输"，会主动关掉自己的 cliprdr 上下文，
+    // 于是文件剪贴板两个方向全部失效。
+    *session.server_file_transfer_enabled.write().unwrap() = true;
     // 编码器默认值必须写进**这个 peer 的 PeerConfig**：登录消息里的 `prefer` 来自
     // `Decoder::preference(id)` → `PeerConfig::load(id)`，而此时 `LoginConfigHandler` 还没
     // initialize（id 为空），在 session 上 `set_option` 落不到对端那份配置里。
