@@ -1004,6 +1004,88 @@ pub fn get_app_name() -> String {
     hbb_common::config::APP_NAME.read().unwrap().clone()
 }
 
+/// 从 GitHub release URL 里取出 release id（`v1.4.6`）。
+///
+/// 自动更新那条链路已经删除，但安装期/离线更新元数据（`update_metadata`）仍用它校验版本标识，
+/// 所以这两个纯解析函数留着；它们不发起任何网络请求。
+pub(crate) fn release_id_from_update_url(update_url: &str) -> ResultType<String> {
+    let url = url::Url::parse(update_url)?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        bail!(
+            "Update URL is not a GitHub HTTPS release URL: {}",
+            update_url
+        );
+    }
+    if url_has_explicit_port(update_url)
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        bail!(
+            "Update URL must not contain credentials or an explicit port: {}",
+            update_url
+        );
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!(
+            "Update URL must not contain query or fragment: {}",
+            update_url
+        );
+    }
+    let Some(segments) = url.path_segments() else {
+        bail!("Update URL has no path: {}", update_url);
+    };
+    let segments = segments.collect::<Vec<_>>();
+    let release_id = match segments.as_slice() {
+        ["rustdesk", "rustdesk", "releases", "tag", release_id] => *release_id,
+        ["rustdesk", "rustdesk", "releases", "tag", release_id, ""] => *release_id,
+        _ => bail!(
+            "Update URL is not a RustDesk release tag URL: {}",
+            update_url
+        ),
+    };
+    if release_id.is_empty()
+        || release_id == "."
+        || release_id == ".."
+        || release_id.contains([' ', '/', '\\', '?', '#'])
+        || release_id.contains('%')
+    {
+        bail!("Update URL has no release id: {}", update_url);
+    }
+    Ok(release_id.to_owned())
+}
+
+pub(crate) fn url_has_explicit_port(raw_url: &str) -> bool {
+    let Some((_, rest)) = raw_url.split_once("://") else {
+        return false;
+    };
+    let authority = rest
+        .split(|c| matches!(c, '/' | '?' | '#'))
+        .next()
+        .unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    host_port.rsplit_once(':').is_some()
+}
+
+/// `v1.4.6` → `1.4.6`，只接受稳定的三段数字版本。
+pub(crate) fn display_version_from_release_id(release_id: &str) -> ResultType<String> {
+    let display_version = release_id.strip_prefix('v').unwrap_or(release_id);
+    let segments = display_version.split('.').collect::<Vec<_>>();
+    if segments.len() != 3
+        || segments.iter().any(|segment| {
+            segment.is_empty()
+                || !segment.chars().all(|c| c.is_ascii_digit())
+                || segment.parse::<u16>().is_err()
+        })
+    {
+        bail!("Release id is not a stable display version: {}", release_id);
+    }
+    if get_version_number(display_version) <= 0 {
+        bail!("Release id has invalid display version: {}", release_id);
+    }
+    Ok(display_version.to_owned())
+}
+
 #[inline]
 pub fn is_rustdesk() -> bool {
     hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
