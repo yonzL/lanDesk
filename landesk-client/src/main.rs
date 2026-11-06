@@ -62,12 +62,19 @@ fn main() -> eframe::Result<()> {
 
 /// 界面文案是英文，但后端回的消息可能是中文；装一个系统自带的 CJK 字体，避免豆腐块。
 fn install_cjk_font(ctx: &egui::Context) {
-    const CANDIDATES: [&str; 5] = [
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\msyhl.ttc",
-        "C:\\Windows\\Fonts\\simhei.ttf",
-        "C:\\Windows\\Fonts\\simsun.ttc",
+    // 优先**单文件 TTF**：egui 底层用 ab_glyph，对 `.ttc`（TrueType Collection）支持不可靠，
+    // 之前列表以 msyh.ttc 开头、文件存在就 return，结果一个字形也没装上 → 界面全是豆腐块。
+    const CANDIDATES: [&str; 9] = [
         "C:\\Windows\\Fonts\\Deng.ttf",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+        "C:\\Windows\\Fonts\\simkai.ttf",
+        "C:\\Windows\\Fonts\\simfang.ttf",
+        "C:\\Windows\\Fonts\\SIMYOU.TTF",
+        "C:\\Windows\\Fonts\\STKAITI.TTF",
+        // 最后才退回字体集合（有些机器只有这些）
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\SimsunExtG.ttf",
     ];
     for path in CANDIDATES {
         let Ok(bytes) = std::fs::read(path) else {
@@ -77,16 +84,25 @@ fn install_cjk_font(ctx: &egui::Context) {
         fonts
             .font_data
             .insert("cjk".to_owned(), egui::FontData::from_owned(bytes).into());
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        // 再挂一个符号字体：`✓`/`→`/`·` 这类在中文字体里常常缺字（曾导致豆腐块）。
+        if let Ok(symbols) = std::fs::read("C:\\Windows\\Fonts\\seguisym.ttf") {
             fonts
-                .families
-                .entry(family)
-                .or_default()
-                .push("cjk".to_owned());
+                .font_data
+                .insert("symbols".to_owned(), egui::FontData::from_owned(symbols).into());
+        }
+        // 追加到两个家族的末尾：拉丁字母仍用 egui 自带字体，缺字时才回退到 CJK/符号字体。
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let list = fonts.families.entry(family).or_default();
+            list.push("cjk".to_owned());
+            if fonts.font_data.contains_key("symbols") {
+                list.push("symbols".to_owned());
+            }
         }
         ctx.set_fonts(fonts);
+        hbb_common::log::info!("landesk: cjk font loaded from {path}");
         return;
     }
+    hbb_common::log::warn!("landesk: no cjk font found, non-latin text will show as boxes");
 }
 
 struct App {
@@ -896,10 +912,21 @@ impl eframe::App for App {
                                                 };
                                                 // 没 presence（无 rendezvous）就不假装在线：
                                                 // 只如实显示指纹是否已核对 + 最近一次成功连接。
-                                                let status = match self.book.pins().get(&entry.addr) {
-                                                    Some(host) if host.verified => "✓".to_owned(),
-                                                    Some(_) => "?".to_owned(),
-                                                    None => "·".to_owned(),
+                                                // 状态用**画出来的圆点**而不是字符：中文字体常常缺 `✓`/`·`，
+                                                // 会显示成豆腐块，而图形与字体无关。
+                                                let (color, tip) = match self.book.pins().get(&entry.addr) {
+                                                    Some(host) if host.verified => (
+                                                        egui::Color32::from_rgb(60, 180, 90),
+                                                        format!("verified {}", host.fingerprint),
+                                                    ),
+                                                    Some(host) => (
+                                                        egui::Color32::from_rgb(220, 170, 40),
+                                                        format!("unverified {}", host.fingerprint),
+                                                    ),
+                                                    None => (
+                                                        egui::Color32::from_gray(120),
+                                                        "never connected".to_owned(),
+                                                    ),
                                                 };
                                                 ui.horizontal(|ui| {
                                                     let mut is_target =
@@ -919,7 +946,7 @@ impl eframe::App for App {
                                                         == Some(&entry.addr);
                                                     let response = ui
                                                         .selectable_label(selected, label)
-                                                        .on_hover_text(status.to_owned());
+                                                        .on_hover_text(tip.clone());
                                                     if response.clicked() {
                                                         self.selected = Some(entry.addr.clone());
                                                     }
@@ -928,7 +955,12 @@ impl eframe::App for App {
                                                         self.selected = Some(entry.addr.clone());
                                                         open_remote_window(&entry.addr);
                                                     }
-                                                    ui.small(status.to_owned());
+                                                    let (rect, dot) = ui.allocate_exact_size(
+                                                        egui::vec2(10.0, 10.0),
+                                                        egui::Sense::hover(),
+                                                    );
+                                                    ui.painter().circle_filled(rect.center(), 4.0, color);
+                                                    dot.on_hover_text(tip);
                                                 });
                                             }
                                         });
