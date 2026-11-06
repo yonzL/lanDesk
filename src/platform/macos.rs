@@ -857,8 +857,6 @@ pub fn lock_screen() {
 /// silent auto-update thread.
 pub fn start_os_service() {
     log::info!("Username: {}", crate::username());
-    // Silent auto-update — runs as root via LaunchDaemon, no osascript dialog needed
-    crate::updater::start_auto_update_macos();
     if let Err(err) = crate::ipc::start("_service") {
         log::error!("Failed to start ipc_service: {}", err);
     }
@@ -1230,10 +1228,6 @@ pub fn update_from_dmg_as_root(dmg_path: &str, expected_version: &str) -> Result
     let daemon_plist = format!("/Library/LaunchDaemons/com.carriez.{}_service.plist", app_name);
 
     log::info!("[root-update] Starting silent root update from {}", dmg_path);
-    // Check sessions before extracting to avoid unnecessary work
-    if !crate::updater::has_no_active_conns_ipc() {
-        bail!("[root-update] Active session detected, deferring update.");
-    }
     // Extract DMG to temp dir
     extract_dmg_into_existing_dir(dmg_path, &tmp_dir)?;
     let src_app = format!("{}/{}.app", tmp_dir, app_name);
@@ -1334,19 +1328,7 @@ pub fn update_from_dmg_as_root(dmg_path: &str, expected_version: &str) -> Result
     // moved into its final root-owned location.  This avoids executing code
     // directly from /tmp while ensuring the plist matches the new release.
 
-    // Final session check after extraction — minimize race window
-    if !crate::updater::has_no_active_conns_ipc() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        bail!("[root-update] Active session detected after extraction, deferring update.");
-    }
 
-    // Let the detached-script launch settle before taking the affected-user
-    // snapshot. The final IPC check then happens after the delay and as close
-    // as possible to stopping those exact launchd domains.
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    if !crate::updater::has_no_active_conns_ipc() {
-        bail!("[root-update] active session started before update launch");
-    }
     let logged_in_uids = get_logged_in_uids();
     // UIDs are parsed as integers before embedding in the root-run shell
     // script, so they cannot alter its command structure.
@@ -1879,9 +1861,6 @@ rm -rf {tmp_dir}
     // best-effort: it is not atomic with shutdown in the detached script.
     if get_logged_in_uids() != logged_in_uids {
         bail!("[root-update] GUI session set changed before update launch");
-    }
-    if !crate::updater::has_no_active_conns_ipc() {
-        bail!("[root-update] active session started before update launch");
     }
     if let Err(err) = Command::new("/bin/bash")
         .arg(&script_path)

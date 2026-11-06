@@ -179,37 +179,6 @@ pub fn new() -> ServerPtr {
     Arc::new(RwLock::new(server))
 }
 
-async fn accept_connection_(
-    server: ServerPtr,
-    socket: Stream,
-    secure: bool,
-    meta: ConnectionMeta,
-    slot: crate::rendezvous_mediator::PunchSlot,
-) -> ResultType<()> {
-    let local_addr = socket.local_addr();
-    drop(socket);
-    // even we drop socket, below still may fail if not use reuse_addr,
-    // there is TIME_WAIT before socket really released, so sometimes we
-    // see "Only one usage of each socket address is normally permitted" on windows sometimes,
-    let listener = new_listener(local_addr, true).await?;
-    log::info!("Server listening on: {}", &listener.local_addr()?);
-    if let Ok((stream, addr)) = timeout(CONNECT_TIMEOUT, listener.accept()).await? {
-        // The peer is in: the place goes back before the session runs, as every punch's does.
-        drop(slot);
-        stream.set_nodelay(true).ok();
-        let stream_addr = stream.local_addr()?;
-        create_tcp_connection(
-            server,
-            Stream::from(stream, stream_addr),
-            addr,
-            secure,
-            meta,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
 pub async fn create_tcp_connection(
     server: ServerPtr,
     stream: Stream,
@@ -366,77 +335,6 @@ async fn identity_handshake(stream: &mut Stream, secure: bool) -> ResultType<Opt
     }
 
     Ok(transcript)
-}
-
-pub(crate) async fn accept_connection(
-    server: ServerPtr,
-    socket: Stream,
-    peer_addr: SocketAddr,
-    secure: bool,
-    meta: ConnectionMeta,
-    slot: crate::rendezvous_mediator::PunchSlot,
-) {
-    if let Err(err) = accept_connection_(server, socket, secure, meta, slot).await {
-        log::warn!("Failed to accept connection from {}: {}", peer_addr, err);
-    }
-}
-
-pub async fn create_relay_connection(
-    server: ServerPtr,
-    relay_server: String,
-    uuid: String,
-    peer_addr: SocketAddr,
-    secure: bool,
-    ipv4: bool,
-    meta: ConnectionMeta,
-) {
-    if let Err(err) = create_relay_connection_(
-        server,
-        relay_server,
-        uuid.clone(),
-        peer_addr,
-        secure,
-        ipv4,
-        meta,
-    )
-    .await
-    {
-        log::error!(
-            "Failed to create relay connection for {} with uuid {}: {}",
-            peer_addr,
-            uuid,
-            err
-        );
-    }
-}
-
-async fn create_relay_connection_(
-    server: ServerPtr,
-    relay_server: String,
-    uuid: String,
-    peer_addr: SocketAddr,
-    secure: bool,
-    ipv4: bool,
-    meta: ConnectionMeta,
-) -> ResultType<()> {
-    // The proxy's address family does not constrain the relay target.
-    let relay_server = crate::check_port(relay_server, RELAY_PORT);
-    let use_ws_proxy = Config::is_proxy() && is_ws_endpoint(&check_ws(&relay_server));
-    let mut stream = socket_client::connect_tcp(
-        socket_client::ipv4_to_ipv6(relay_server, ipv4 || use_ws_proxy),
-        CONNECT_TIMEOUT,
-    )
-    .await?;
-    let mut msg_out = RendezvousMessage::new();
-    let licence_key = crate::get_key(true).await;
-    msg_out.set_request_relay(RequestRelay {
-        licence_key,
-        uuid,
-        ..Default::default()
-    });
-    stream.send(&msg_out).await?;
-    create_tcp_connection(server, stream, peer_addr, secure, meta).await?;
-    Ok(())
 }
 
 impl Server {
@@ -664,7 +562,8 @@ pub fn check_zombie() {
 #[tokio::main]
 pub async fn start_server(_is_server: bool) {
     allow_err!(crate::trusted_devices::initialize());
-    crate::RendezvousMediator::start_all().await;
+    // 这个分支的协调器已被移除：移动端只剩“直连监听”这一种形态，而它在本构建里没有实现。
+    log::warn!("no coordinator in this build; nothing to start on mobile");
 }
 
 /// Start the host server that allows the remote peer to control the current machine.
@@ -747,7 +646,10 @@ pub async fn start_server(is_server: bool, no_server: bool) {
                 log::error!("landesk: listener stopped: {err}");
             }
         } else {
-            crate::RendezvousMediator::start_all().await;
+            // 没有 hbbs 可用：非 landesk 配置下这个服务什么都不做（不向外拨号）。
+            log::error!(
+                "landesk: no listen port configured, so there is nothing to serve; \n                 run `--landesk-save-config --landesk-listen <port> --landesk-auth-key <key>`"
+            );
         }
     } else {
         match crate::ipc::connect(1000, "").await {

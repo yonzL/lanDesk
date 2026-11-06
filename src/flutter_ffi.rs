@@ -66,7 +66,6 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
         crate::platform::android_log::initialize();
         #[cfg(feature = "mediacodec")]
         scrap::mediacodec::check_mediacodec();
-        crate::common::test_rendezvous_server();
         crate::common::test_nat_type();
     }
     #[cfg(target_os = "ios")]
@@ -1077,9 +1076,7 @@ pub fn main_set_option(key: String, value: String) -> hbb_common::anyhow::Result
         }
         set_option(key, value.clone());
         #[cfg(target_os = "android")]
-        crate::rendezvous_mediator::RendezvousMediator::restart();
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        crate::common::test_rendezvous_server();
     } else {
         set_option(key, value.clone());
     }
@@ -1821,7 +1818,6 @@ pub fn main_get_last_remote_id() -> String {
 }
 
 pub fn main_get_software_update_url() {
-    crate::common::check_software_update();
 }
 
 pub fn main_get_home_dir() -> String {
@@ -2200,7 +2196,6 @@ pub fn main_stop_service() {
     #[cfg(target_os = "android")]
     {
         config::Config::set_option("stop-service".into(), "Y".into());
-        crate::rendezvous_mediator::RendezvousMediator::restart();
     }
 }
 
@@ -2208,8 +2203,6 @@ pub fn main_start_service() {
     #[cfg(target_os = "android")]
     {
         config::Config::set_option("stop-service".into(), "".into());
-        crate::rendezvous_mediator::reset_needs_deploy_notification();
-        crate::rendezvous_mediator::RendezvousMediator::restart();
     }
 }
 
@@ -3105,8 +3098,6 @@ pub mod server_side {
     pub unsafe extern "system" fn Java_ffi_FFI_startService(_env: JNIEnv, _class: JClass) {
         log::debug!("startService from jvm");
         config::Config::set_option("stop-service".into(), "".into());
-        crate::rendezvous_mediator::reset_needs_deploy_notification();
-        crate::rendezvous_mediator::RendezvousMediator::restart();
     }
 
     #[no_mangle]
