@@ -141,6 +141,8 @@ struct App {
     last_frame_at: Option<std::time::Instant>,
     /// 主窗口上一次重读地址簿的时间。
     last_book_poll: Option<std::time::Instant>,
+    /// 上一次看到的窗口焦点状态；变化时才调整优先级与帧率。
+    last_focused: Option<bool>,
 }
 
 impl App {
@@ -172,6 +174,7 @@ impl App {
             fps: 30,
             last_frame_at: None,
             last_book_poll: None,
+            last_focused: None,
         };
         app.reload();
         // 远程窗口模式：进程起来就直接连，不需要用户在子窗口里再点一次。
@@ -352,7 +355,9 @@ impl App {
             return;
         }
         if seq == self.last_frame_seq {
-            ctx.request_repaint_after(Duration::from_millis(16));
+            // 后台窗口不必要 60Hz 轮询：降到 5Hz，把 CPU 留给前台会话。
+            let idle_ms = if self.last_focused == Some(false) { 200 } else { 16 };
+            ctx.request_repaint_after(Duration::from_millis(idle_ms));
             return;
         }
         let Some(frame) = session.latest_frame() else {
@@ -858,6 +863,16 @@ impl eframe::App for App {
         let remote = self.remote_addr.is_some();
         if !remote {
             self.poll_book_reload();
+        } else {
+            // 十几个会话窗口同时开着时，后台窗口不该和前台争 CPU：
+            // 焦点变化 → 进程优先级 + 请求帧率一起降级/恢复。
+            let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+            if self.last_focused != Some(focused) {
+                self.last_focused = Some(focused);
+                if let Some(session) = &self.session {
+                    session.set_background(!focused, self.fps);
+                }
+            }
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {

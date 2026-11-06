@@ -372,6 +372,20 @@ impl SessionHandle {
         self.session.set_custom_fps(fps);
     }
 
+    /// 把会话切到“后台”状态：降低本进程优先级，并把请求帧率压到后台值。
+    ///
+    /// 一个 Master 可能同时开十几个窗口，后台窗口不该和前台争 CPU。恢复时把帧率交还给
+    /// `foreground_fps`（界面当前的帧率上限），上游的自适应 `fps_control` 会从那里自己爬回去。
+    pub fn set_background(&self, background: bool, foreground_fps: i32) {
+        crate::landesk::priority::set_background(background);
+        let fps = if background {
+            crate::landesk::priority::BACKGROUND_FPS
+        } else {
+            foreground_fps.max(crate::landesk::priority::BACKGROUND_FPS)
+        };
+        self.session.set_custom_fps(fps);
+    }
+
     /// 自定义画质的百分比（上游 `custom_image_quality`，10–100）。
     pub fn custom_image_quality(&self) -> i32 {
         self.session
