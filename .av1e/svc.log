@@ -1,7 +1,0 @@
-[2026-11-06T15:56:17Z INFO  librustdesk::core_main] start --server with user Hugh
-[2026-11-06T15:56:17Z INFO  librustdesk::server] landesk: skipping the rendezvous mediator (no outbound coordination)
-[2026-11-06T15:56:17Z INFO  librustdesk::landesk] landesk: probe av1-test = "N"
-[2026-11-06T15:56:17Z INFO  librustdesk::transport] landesk: service listening on 0.0.0.0:31997
-[2026-11-06T15:56:17Z INFO  librustdesk::landesk] landesk: listener state=listening port=31997
-[2026-11-06T15:56:17Z INFO  librustdesk::landesk::net] landesk: only private networks may connect (9 default ranges)
-错误: 没有找到进程 "RuntimeBroker_rustdesk.exe"。
