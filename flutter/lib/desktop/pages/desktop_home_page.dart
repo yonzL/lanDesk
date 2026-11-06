@@ -391,6 +391,18 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   buildTip(BuildContext context) {
     final isOutgoingOnly = bind.isOutgoingOnly();
+    // lanDesk 的 Master 只负责拨出去：“你的桌面可以通过下面的 ID 和密码访问”这类说明
+    // 描述的是公网中继里的被控端，这里既没有 ID 也没有密码可看。
+    if (bind.landeskBuild() && !isOutgoingOnly) {
+      return Padding(
+        padding:
+            const EdgeInsets.only(left: 20.0, right: 16, top: 16.0, bottom: 5),
+        child: Text(
+          '局域网直连：双击右侧地址簿里的机器即可连接。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      );
+    }
     return Padding(
       padding:
           const EdgeInsets.only(left: 20.0, right: 16, top: 16.0, bottom: 5),
