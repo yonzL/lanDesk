@@ -89,3 +89,32 @@
 另外：这一轮清掉了一个隐形隐患——`flutter_ffi.rs` / `ui_interface.rs` 里**只在 `--features flutter` 下编译**的代码，
 长期带着指向已删模块的引用（`hbbs_http::account`、`hbbs_http::downloader`），默认构建永远看不见。
 这些云钩子现在已删，`--features flutter` 不会再报 E0433。
+
+## 7. 更新：先决条件已打通（本机实测）
+
+之前的"ffigen 卡住"已解决，原因不是 ffigen 本身，而是 **pub 的包源**：
+
+1. `flutter pub get` 必须能让 pub 访问网络。用 `PUB_HOSTED_URL=https://pub.flutter-io.cn` 会失败，报
+   `Downloaded archive for image_picker_ios-0.8.13+15 had wrong content-hash`（镜像包的哈希是坏的）。
+   **改用 pub.dev + `HTTPS_PROXY`/`https_proxy` 就通过**：
+   ```bash
+   export PATH="/path/to/flutter/bin:$PATH" LIBCLANG_PATH="C:\Program Files\LLVM\bin"
+   export HTTPS_PROXY=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890   # 大小写都要
+   export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.sslBackend GIT_CONFIG_VALUE_0=openssl \
+          GIT_CONFIG_KEY_1=http.proxy GIT_CONFIG_VALUE_1=http://127.0.0.1:7890   # pubspec 里有 GitHub git 依赖
+   cd flutter && flutter pub get
+   ```
+2. 然后 codegen 完整成功（含 ffigen 与 Dart 格式化）：
+   ```
+   flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart
+   → Success! 生成 src/bridge_generated.rs + .io.rs + flutter/lib/generated_bridge.dart(447KB)
+   ```
+3. `cargo check -p rustdesk --lib --features flutter` → **通过**（只有上游 warning）。这是本项目第一次让 flutter 特性参与编译。
+
+### 仍然挡在面前的三件事（都不是 codegen）
+
+| 阻碍 | 说明 |
+|---|---|
+| **Flutter SDK 版本** | 本机解包的是 **3.47.9 / Dart 3.13.7**，而上游这条分支按 3.24.5/Dart 3.5 写。`flutter analyze` 的 13 个 error 里有 9 个是 API 改名（`DialogTheme` → `DialogThemeData`、`TabBarTheme` → `TabBarThemeData`，见 `lib/common.dart:382/413/480/514`）。要么换 SDK 版本，要么改这几处调用 |
+| **登录/账号页要删** | 另外 3–4 个 error 是 `mainAccountAuthCancel` / `mainAccountAuth` 未定义——因为我们已经从 Rust 侧删掉了云账号 FFI。landesk 没有账号体系，`lib/common/widgets/login.dart` 这套页面本来就要被地址簿取代 |
+| **Developer Mode** | `flutter pub get` 提示 "Building with plugins requires symlink support"，需要机器上开启开发者模式（`start ms-settings:developers`），否则带插件的构建会失败 |
