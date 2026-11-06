@@ -269,3 +269,32 @@ Impeller 渲染、右侧面板显示「地址簿 N 台」+ 组/子组树 + 条�
 
 **这版还会看到的上游残留**（下一步清理）：左侧「你的桌面 / ID / 一次性密码」卡片与「输入对方 ID → 连接」输入框
 ——lanDesk 没有 ID、没有 rendezvous，那个框点了必然失败；以及「由 RustDesk 提供支持」的署名。
+
+## 14. 发布版与整包实测（本轮收尾）
+
+```
+cargo build --release --lib --features flutter      → target/release/librustdesk.dll (35MB)
+flutter build windows --release                     → √ 157s, build\...\Release\ 共 75MB
+cargo build --release --bin landesk-server -p rustdesk --bin landesk-client -p landesk-client
+bash scripts/dist.sh                                → dist/lanDesk-<日期>.zip (69MB)
+```
+
+包结构：
+
+```
+lanDesk-<日期>/
+  landesk-server.exe        被控机（Service / 命令行）
+  landesk-client.exe        控制机备用界面（eframe）
+  master/
+    landesk-master.exe      正式界面（Flutter runner 改名）
+    landesk-client.exe      双击连接时拉起的那个 eframe 壳
+    librustdesk.dll, flutter_windows.dll, data/, *plugin.dll
+  使用说明.txt
+```
+
+**整包实测**（本机）：`master/landesk-master.exe` 起来 → 右侧地址簿树读 `addressbook.json` → 双击
+`127.0.0.1:31361`（本机另起的 `--server`，`allowed_networks` 只放 127.0.0.1/32）→ 弹出
+`lanDesk — 127.0.0.1:31361` 会话窗口，桌面镜像正常，工具栏显示 `Host: never connected`（首次连接，
+指纹未核对）与质量/编码器切换。
+
+也就是说：**发布包里的正式界面 → 双击 → 真实会话**这条链路已经通了。
