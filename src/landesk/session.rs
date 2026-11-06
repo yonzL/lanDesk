@@ -53,6 +53,7 @@ pub(crate) fn take_target(peer: &str) -> Option<Target> {
 #[derive(Clone, Default)]
 pub struct LandeskUi {
     frames: Arc<Mutex<Option<Arc<Frame>>>>,
+    keys_dir: Arc<Mutex<Option<String>>>,
     seq: Arc<std::sync::atomic::AtomicU64>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
@@ -63,6 +64,20 @@ pub struct LandeskUi {
 }
 
 impl LandeskUi {
+    /// 记下对端上报的公钥目录（`--landesk-enroll` 用它决定把公钥推到哪里）。
+    fn note_platform_additions(&self, data: &str) {
+        if data.trim().is_empty() {
+            return;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+            if let Some(dir) = value.get("landesk_keys_dir").and_then(|v| v.as_str()) {
+                if let Ok(mut slot) = self.keys_dir.lock() {
+                    *slot = Some(dir.to_owned());
+                }
+            }
+        }
+    }
+
     fn note(&self, message: String) {
         log::info!("landesk: {message}");
         self.messages.lock().unwrap().push(message);
@@ -75,7 +90,10 @@ impl InvokeUiSession for LandeskUi {
     fn set_cursor_position(&self, _cp: CursorPosition) {}
     fn set_display(&self, _x: i32, _y: i32, _w: i32, _h: i32, _cursor_embedded: bool, _scale: f64) {}
     fn switch_display(&self, _display: &SwitchDisplay) {}
-    fn set_peer_info(&self, _peer_info: &PeerInfo) {}
+    fn set_peer_info(&self, peer_info: &PeerInfo) {
+        // 完整的那份 PeerInfo（含 platform_additions）随登录响应下发，走这里而不是单独那条消息。
+        self.note_platform_additions(&peer_info.platform_additions);
+    }
     fn set_displays(&self, displays: &Vec<DisplayInfo>) {
         let mut slots = self.displays.lock().unwrap();
         slots.clear();
@@ -83,7 +101,9 @@ impl InvokeUiSession for LandeskUi {
             slots.push((index as i32, display.width, display.height));
         }
     }
-    fn set_platform_additions(&self, _data: &str) {}
+    fn set_platform_additions(&self, data: &str) {
+        self.note_platform_additions(data);
+    }
     fn on_connected(&self, _conn_type: ConnType) {}
     fn update_privacy_mode(&self) {}
     fn set_permission(&self, _name: &str, _value: bool) {}
@@ -210,6 +230,7 @@ impl InvokeUiSession for LandeskUi {
 /// 一次 landesk 会话的把手：界面从这里取最新画面、发输入。
 pub struct SessionHandle {
     frames: Arc<Mutex<Option<Arc<Frame>>>>,
+    keys_dir: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Vec<String>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
@@ -241,6 +262,11 @@ impl SessionHandle {
             .as_ref()
             .map(|frame| frame.seq)
             .unwrap_or(0)
+    }
+
+    /// 对端上报的 client 公钥目录（`--landesk-enroll` 用它决定把公钥推到哪里）。
+    pub fn remote_keys_dir(&self) -> Option<String> {
+        self.keys_dir.lock().unwrap().clone()
     }
 
     /// 对端报告过的显示器（序号、宽、高）。多于一台时界面给出切换。
@@ -354,6 +380,7 @@ pub fn start(peer: String, book: PathBuf, key: PathBuf, control: bool) -> Result
     );
     let handle = SessionHandle {
         frames: shared.frames.clone(),
+        keys_dir: shared.keys_dir.clone(),
         messages: shared.messages.clone(),
         closed: shared.closed.clone(),
         displays: shared.displays.clone(),
@@ -541,6 +568,8 @@ fn to_rgba(rgba: &scrap::ImageRgb, width: usize, height: usize) -> Option<Vec<u8
 
 struct Shared {
     frames: Arc<Mutex<Option<Arc<Frame>>>>,
+    /// 对端上报的 client 公钥目录（landesk 模式；用于 `--landesk-enroll` 把公钥推过去）。
+    keys_dir: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Vec<String>>>,
     displays: Arc<Mutex<Vec<(i32, i32, i32)>>>,
     listings: Arc<Mutex<Vec<FileListing>>>,
@@ -553,6 +582,7 @@ impl Shared {
             frames: Arc::new(Mutex::new(None)),
             messages: Arc::new(Mutex::new(Vec::new())),
             displays: Arc::new(Mutex::new(Vec::new())),
+            keys_dir: Arc::new(Mutex::new(None)),
             listings: Arc::new(Mutex::new(Vec::new())),
             closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -577,6 +607,7 @@ fn build_session(
     let mut session = Session::<LandeskUi>::default();
     session.ui_handler = LandeskUi {
         frames: shared.frames.clone(),
+        keys_dir: shared.keys_dir.clone(),
         seq: Default::default(),
         messages: shared.messages.clone(),
         displays: shared.displays.clone(),

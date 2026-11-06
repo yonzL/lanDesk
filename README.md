@@ -155,6 +155,14 @@ landesk-server.exe --landesk-client-list                                    # �
 
 旧的单值写法 `auth_key: "<hex>"` 仍然可读，视为列表里的一个元素（那就是“一把钥匙开全网”的形态）。
 
+**一步把新 Master 加进多台 Service：** 服务端会自动建好公钥目录 `<exe 目录>andesk.dients`，里面一个文件一把公钥。在 Master 上执行一次即可（它会先问对端这个目录在哪，再用文件会话把 `public.key` 推过去）：
+
+```bash
+landesk-server.exe --landesk-enroll 192.168.99.191:21118,192.168.99.239:21118 --landesk-key master.key
+```
+
+撤销某台 Master：删掉它那个 `.pub` 文件，或 `--landesk-revoke-client`。两种方式都从下一次连接起生效。
+
 **来源网络白名单（默认只收私有网段）：** 监听端口默认只接受私有地址段的连接（`10/8`、`172.16/12`、`192.168/16`、`100.64/10`、`127/8`、`169.254/16`、`fc00::/7`、`fe80::/10`、`::1/128`），公网来源在握手前就被丢弃并记一行 `rejected connection from disallowed source`。要跨公网用，就显式配一份列表（配了就是**替换**默认值）：
 
 ```bash

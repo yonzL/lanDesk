@@ -62,6 +62,8 @@ pub struct LandeskConfig {
     pub revoke_client: Option<String>,
     /// 服务端：列出已绑定的 client 公钥。
     pub client_list: bool,
+    /// Master 侧：把本机公钥分发到这些 Service（一步完成新增 client）。
+    pub enroll: Option<Vec<String>>,
     /// 监听参数是不是从 `landesk.json` 读来的：监督循环只在这为 true 时重读文件，
     /// 否则命令行给的端口会被文件覆盖（测试与临时实例就靠命令行）。
     pub listen_spec_from_file: bool,
@@ -112,6 +114,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
     let mut allow_client = None;
     let mut revoke_client = None;
     let mut client_list = false;
+    let mut enroll = None;
     let mut rest = Vec::with_capacity(args.len());
     let incoming = std::mem::take(args);
     let mut iter = incoming.into_iter().peekable();
@@ -220,6 +223,12 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
                 revoke_client = Some(value);
             }
             "--landesk-client-list" => client_list = true,
+            "--landesk-enroll" => {
+                let Some(value) = iter.next() else {
+                    bail!("--landesk-enroll needs a comma separated list of addr:port");
+                };
+                enroll = Some(split_list(&value));
+            }
             "--landesk-view" => view = true,
             _ => rest.push(arg),
         }
@@ -268,6 +277,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
         || allow_client.is_some()
         || revoke_client.is_some()
         || client_list
+        || enroll.is_some()
         || push.is_some()
     {
         CONFIG.get_or_init(|| LandeskConfig {
@@ -292,6 +302,7 @@ pub fn take_from_args(args: &mut Vec<String>) -> ResultType<()> {
             allow_client,
             revoke_client,
             client_list,
+            enroll,
         });
     }
     Ok(())
@@ -828,17 +839,25 @@ pub fn read_listen_status() -> Option<ListenStatus> {
 /// **每次连接都重读** `landesk.json`：这样 `--landesk-allow-client` / `--landesk-revoke-client`
 /// 改完立刻生效，不需要重启服务。文件不在或读不出来时回落到启动时的配置。
 pub fn reload_auth_keys() -> Vec<sign::PublicKey> {
-    let from_file = std::fs::read_to_string(config_file_path())
+    // 公钥目录先建出来：分发时第一次推送就能直接落文件，不必先手工建目录。
+    let _ = std::fs::create_dir_all(keys_dir());
+    // 来源：`landesk.json`（集合或旧的单值）+ 公钥目录（分发用）。
+    // 文件存在但里面一把都没有，就是“已经被撤销干净”——不能再用启动时的缓存把它复活。
+    let mut keys = match std::fs::read_to_string(config_file_path())
         .ok()
         .and_then(|text| serde_json::from_str::<ConfigFile>(&text).ok())
-        .map(|file| file.public_keys())
-        .unwrap_or_default();
-    if !from_file.is_empty() {
-        return from_file;
+    {
+        Some(file) => file.public_keys(),
+        None => config()
+            .map(|config| config.auth_pks.clone())
+            .unwrap_or_default(),
+    };
+    for pk in keys_from_dir() {
+        if !keys.contains(&pk) {
+            keys.push(pk);
+        }
     }
-    config()
-        .map(|config| config.auth_pks.clone())
-        .unwrap_or_default()
+    keys
 }
 
 /// 把 `--landesk-allow-client` / `--landesk-revoke-client` 的参数理解成一把公钥。
@@ -909,4 +928,164 @@ pub fn run_client_key_command(config: &LandeskConfig) -> ResultType<()> {
         println!("提示：landesk.json 里还没有 listen_port，服务不会监听");
     }
     Ok(())
+}
+
+/// 服务端的 client 公钥目录：`<exe 目录>/landesk.d/clients`，一个文件一把公钥。
+///
+/// 这是给"分发"用的：把某台 Master 的 `public.key` 推到每台 Service 的这个目录里，
+/// 就不必远程执行任何命令，也不需要重启服务（下一次连接就会读到）。
+pub fn keys_dir() -> PathBuf {
+    exe_dir().join("landesk.d").join("clients")
+}
+
+/// 读公钥目录里的所有 `*.pub`（或任意文本文件）内容并解析成公钥。
+///
+/// 单个文件读不出来只记一条 warn，不影响其它条目。
+fn keys_from_dir() -> Vec<sign::PublicKey> {
+    let dir = keys_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut keys: Vec<sign::PublicKey> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read_to_string(&path)
+            .ok()
+            .map(|text| parse_public_key(text.trim()))
+        {
+            Some(Ok(pk)) => {
+                if !keys.contains(&pk) {
+                    keys.push(pk);
+                }
+            }
+            Some(Err(_)) => log::warn!(
+                "landesk: {} does not contain a public key, ignoring it",
+                path.display()
+            ),
+            None => {}
+        }
+    }
+    keys
+}
+
+/// 把本机 Master 的公钥分发到若干 Service 的公钥目录（一步完成"新增一台 client"）。
+///
+/// 做法分两步，都不需要在被控端执行命令：
+/// 1. 连一次普通会话，从对端的 `platform_additions.landesk_keys_dir` 拿到公钥目录；
+/// 2. 用文件会话把 `public.key` 推进那个目录，文件名用公钥指纹（便于人工去重/撤销）。
+///
+/// 服务端每次连接重读该目录，所以推进去之后下一次连接就生效，不需要重启服务。
+pub fn run_enroll(config: &LandeskConfig) -> ResultType<()> {
+    let Some(peers) = &config.enroll else {
+        return Ok(());
+    };
+    let key_path = config.key_path();
+    let public_path = key_path.with_file_name("public.key");
+    if !public_path.is_file() {
+        bail!(
+            "找不到 {}：enroll 需要这台 Master 的公钥（先用 --landesk-genkey 生成一对）",
+            public_path.display()
+        );
+    }
+    let public_hex = std::fs::read_to_string(&public_path)
+        .map(|text| text.trim().to_owned())
+        .unwrap_or_default();
+    let fingerprint = if public_hex.is_empty() {
+        "client".to_owned()
+    } else {
+        public_hex.chars().take(16).collect()
+    };
+    let mut failures = 0;
+    for peer in peers {
+        println!("→ {peer}");
+        let dir = match remote_keys_dir(peer, config) {
+            Ok(dir) => dir,
+            Err(err) => {
+                println!("  [fail] 拿不到对端的公钥目录：{err}");
+                failures += 1;
+                continue;
+            }
+        };
+        match push_key(peer, config, &public_path, &dir, &fingerprint) {
+            Ok(()) => println!("  [ ok ] 已推送 {} → {dir}", public_path.display()),
+            Err(err) => {
+                println!("  [fail] 推送失败：{err}");
+                failures += 1;
+            }
+        }
+    }
+    if failures > 0 {
+        bail!("{failures} 台推送失败");
+    }
+    Ok(())
+}
+
+/// 连一次普通会话，只为读对方上报的公钥目录。
+fn remote_keys_dir(peer: &str, config: &LandeskConfig) -> ResultType<String> {
+    let session = crate::landesk::session::start(
+        peer.to_owned(),
+        config.book_path(),
+        config.key_path(),
+        true,
+    )?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut dir = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(found) = session.remote_keys_dir() {
+            dir = Some(found);
+            break;
+        }
+        if session.is_closed() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    session.close();
+    dir.ok_or_else(|| hbb_common::anyhow::anyhow!("对端没有上报 landesk_keys_dir（版本太旧？）"))
+}
+
+/// 用文件会话把公钥写进对端的公钥目录。
+fn push_key(
+    peer: &str,
+    config: &LandeskConfig,
+    public_path: &std::path::Path,
+    remote_dir: &str,
+    fingerprint: &str,
+) -> ResultType<()> {
+    let mut session = crate::landesk::session::start_file_transfer(
+        peer.to_owned(),
+        config.book_path(),
+        config.key_path(),
+        true,
+        remote_dir.to_owned(),
+    )?;
+    let ready = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < ready {
+        session.list(remote_dir);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if session.take_listing().is_some() {
+            break;
+        }
+    }
+    let dest = format!("{remote_dir}\\{fingerprint}.pub");
+    session.upload(&public_path.to_string_lossy(), &dest);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        for message in session.drain_messages() {
+            if message.contains("文件传输完成") {
+                session.close();
+                return Ok(());
+            }
+            if message.contains("文件传输失败") {
+                session.close();
+                bail!("{message}");
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    session.close();
+    bail!("等待推送结果超时")
 }

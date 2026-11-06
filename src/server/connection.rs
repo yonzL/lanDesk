@@ -2037,6 +2037,13 @@ impl Connection {
                     && (!is_both_macos || is_peer_support_paste_if_macos));
             platform_additions.insert("has_file_clipboard".into(), json!(has_file_clipboard));
         }
+        // 让 `--landesk-enroll` 知道该把公钥推到哪个目录（这个路径只有服务端自己知道）。
+        if crate::landesk::takes_over_network() {
+            platform_additions.insert(
+                "landesk_keys_dir".into(),
+                json!(crate::landesk::keys_dir().to_string_lossy()),
+            );
+        }
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
