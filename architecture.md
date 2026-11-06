@@ -162,7 +162,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
   Flutter 自己的远程会话窗口还要复用上游的 `desktop_multi_window` 链路；在那之前双击落到同目录的 `landesk-client.exe`。
   两个壳共用同一套后端与 `src/landesk/ffi.rs` 边界——换壳不动后端。
 
-界面与后端的分工是稳定的：landesk 已经把界面需要的东西集中暴露在 `src/landesk/ffi.rs`（`book_list` / `book_upsert` / `book_remove` / `book_verify` / `identity_list` / `listen_status` / `open_remote_window`），`flutter_ffi.rs` 只有一层同名薄封装。**换 UI 不动后端。**
+界面与后端的分工是稳定的：landesk 已经把界面需要的东西集中暴露在 `src/landesk/ffi.rs`（`book_list` / `book_upsert` / `book_remove` / `book_verify` / `identity_list` / `listen_status` / `open_remote_window`），`flutter_ffi.rs` 只有一层同名薄封装（`landesk_` 前缀）加一个编译期标志 `landesk_build()`。**换 UI 不动后端。**
 
 **一个会话一个进程**：界面不自己跑会话，调用 `open_remote_window(addr)` 起一个 `--landesk-remote <addr>` 子进程。崩溃隔离、输入法/剪贴板天然按窗口隔离，关窗口即断会话。十几个窗口并存时，后台窗口会被降级（`landesk::priority`：进程优先级 `BELOW_NORMAL` + 请求帧率 5 fps + 重绘 5Hz），前台保持 `NORMAL` 与界面帧率上限。
 
