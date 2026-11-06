@@ -162,11 +162,10 @@ pub fn listen_status() -> String {
     }
 }
 
-/// 打开一个远程会话窗口：起一个 `--landesk-remote <addr>` 子进程，一个会话一个进程。
 /// 在独立进程里打开一个远程会话窗口（一个会话一个进程，界面不跟会话同生共死）。
 ///
 /// Flutter 壳的远程会话窗口还没接（要复用上游的多窗口链路），所以这里优先拉起同目录的
-/// `landesk-client.exe`（eframe 壳，`dist.sh` 里两个 exe 一起发布）；找不到才退回用自己。
+/// `landesk-client.exe`（eframe 壳，`dist.sh` 里两个 exe 一起发布），没有它就把原因说清楚。
 pub fn open_remote_window(addr: &str) -> String {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
@@ -177,8 +176,14 @@ pub fn open_remote_window(addr: &str) -> String {
     } else {
         "landesk-client"
     });
-    let program = if sibling.is_file() { sibling } else { exe };
-    match std::process::Command::new(program)
+    if !sibling.is_file() {
+        // 与其静默什么也不发生，不如把“这个壳还开不了会话”说清楚。
+        return format!(
+            "error:{} is missing, so this build cannot open a session window yet",
+            sibling.display()
+        );
+    }
+    match std::process::Command::new(sibling)
         .arg("--landesk-remote")
         .arg(addr)
         .spawn()
