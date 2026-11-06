@@ -3013,6 +3013,11 @@ pub mod server_side {
 
 // ---- landesk：给 Flutter 侧的薄封装（逻辑在 src/landesk/ffi.rs，默认构建里可测） ----
 
+/// 这是 lanDesk 构建。界面用它藏掉 lanDesk 不存在的东西（ID、一次性密码、按 ID 连接）。
+pub fn landesk_build() -> SyncReturn<bool> {
+    SyncReturn(true)
+}
+
 pub fn landesk_book_list() -> String {
     crate::landesk::ffi::book_list()
 }

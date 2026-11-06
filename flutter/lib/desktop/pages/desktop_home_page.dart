@@ -78,6 +78,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Widget buildLeftPane(BuildContext context) {
     final isIncomingOnly = bind.isIncomingOnly();
     final isOutgoingOnly = bind.isOutgoingOnly();
+    final isLandeskBuild = bind.landeskBuild();
     final children = <Widget>[
       if (!isOutgoingOnly) buildPresetPasswordWarning(),
       if (bind.isCustomClient())
@@ -90,8 +91,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         child: loadLogo(),
       ),
       buildTip(context),
-      if (!isOutgoingOnly) buildIDBoard(context),
-      if (!isOutgoingOnly) buildPasswordBoard(context),
+      // lanDesk Master 没有“自己的 ID”和“一次性密码”这种东西：那两张卡是给
+      // 被控端/公网中继展示的，这里显示出来只会让人以为有这个入口。
+      if (!isLandeskBuild && !isOutgoingOnly) buildIDBoard(context),
+      if (!isLandeskBuild && !isOutgoingOnly) buildPasswordBoard(context),
       FutureBuilder<Widget>(
         future: Future.value(
             Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),

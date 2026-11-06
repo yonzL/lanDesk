@@ -304,18 +304,22 @@ class _ConnectionPageState extends State<ConnectionPage>
   @override
   Widget build(BuildContext context) {
     final isOutgoingOnly = bind.isOutgoingOnly();
+    // lanDesk 没有 ID 也没有 rendezvous：按 ID 连接永远失败，所以整行输入框不显示，
+    // 连接一律从下面的地址簿（本机 `addressbook.json`）双击发起。
+    final byIdDisabled = bind.landeskBuild();
     return Column(
       children: [
         Expanded(
             child: Column(
           children: [
-            Row(
-              children: [
-                Flexible(child: _buildRemoteIDTextField(context)),
-              ],
-            ).marginOnly(top: 22),
-            SizedBox(height: 12),
-            Divider().paddingOnly(right: 12),
+            if (!byIdDisabled)
+              Row(
+                children: [
+                  Flexible(child: _buildRemoteIDTextField(context)),
+                ],
+              ).marginOnly(top: 22),
+            if (!byIdDisabled) SizedBox(height: 12),
+            if (!byIdDisabled) Divider().paddingOnly(right: 12),
             Expanded(child: PeerTabPage()),
           ],
         ).paddingOnly(left: 12.0)),

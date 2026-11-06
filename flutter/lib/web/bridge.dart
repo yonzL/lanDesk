@@ -1705,6 +1705,9 @@ class RustdeskImpl {
     return mainGetLocalOption(key: "disable-group-panel", hint: hint) == "Y";
   }
 
+  /// lanDesk 构建：Web 端同样藏掉 ID / 一次性密码 / 按 ID 连接。
+  bool landeskBuild({dynamic hint}) => true;
+
   bool isDisableAccount({dynamic hint}) {
     // Checks HARD_SETTINGS["disable-account"] == "Y"
     return mainGetHardOption(key: "disable-account", hint: hint) == "Y";
