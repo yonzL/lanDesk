@@ -1312,13 +1312,17 @@ pub fn get_active_userid_cached() -> Option<u32> {
 fn get_cm() -> bool {
     // Runs twice a second in the service loop, so walk /proc rather than forking `ps aux`; that
     // fork is also what the `CMD_PS` audit-message workaround this replaces was for.
-    let cm = format!(
-        "{} --cm",
-        std::env::current_exe()
-            .unwrap_or_default()
-            .to_string_lossy()
-    );
-    any_process(None, "cmdline", |cmdline| cmdline.contains(&cm))
+    let exe = std::env::current_exe()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    // landesk 拉起的连接管理器叫 `--landesk-cm`：只认 `--cm` 会看不见它，
+    // 于是 should_start_server 会在重启周期里把带 CM 的用户会话 `--server` 杀掉。
+    let cm = format!("{exe} --cm");
+    let landesk_cm = format!("{exe} --landesk-cm");
+    any_process(None, "cmdline", |cmdline| {
+        cmdline.contains(&cm) || cmdline.contains(&landesk_cm)
+    })
 }
 
 pub fn is_login_wayland() -> bool {

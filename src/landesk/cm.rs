@@ -9,7 +9,7 @@
 use crate::ui_cm_interface::{Client, ConnectionManager, InvokeUiCM};
 use hbb_common::log;
 
-/// 只记日志的 CM 界面实现：9 个回调全是上游 UI 的通知点。
+/// 只记日志的 CM 界面实现：`InvokeUiCM` 的 8 个回调全是上游 UI 的通知点。
 #[derive(Clone)]
 pub struct HeadlessCm;
 
@@ -27,8 +27,9 @@ impl InvokeUiCM for HeadlessCm {
         log::debug!("landesk cm: connection {} removed (close: {})", id, close);
     }
 
-    fn new_message(&self, id: i32, text: String) {
-        log::debug!("landesk cm: message for {}: {}", id, text);
+    fn new_message(&self, id: i32, _text: String) {
+        // 聊天文本由对端控制频率、而且是用户内容：只记“有消息”，不写正文，级别压到 trace。
+        log::trace!("landesk cm: chat message for {id}");
     }
 
     fn change_theme(&self, _dark: String) {}
@@ -39,8 +40,10 @@ impl InvokeUiCM for HeadlessCm {
 
     fn update_voice_call_state(&self, _client: &Client) {}
 
-    fn file_transfer_log(&self, action: &str, log: &str) {
-        log::debug!("landesk cm: {} {}", action, log);
+    fn file_transfer_log(&self, action: &str, _log: &str) {
+        // 每个 Data::FS 块都会调到这里，且带着整份 transfer-jobs 序列化文本：
+        // debug 级会把 16MB 的日志轮转冲满，所以只留 trace 与动作名。
+        log::trace!("landesk cm: {} update", action);
     }
 }
 
