@@ -612,6 +612,16 @@ fn build_session(
 }
 
 fn spawn_session(session: Session<LandeskUi>, closed: Arc<std::sync::atomic::AtomicBool>) {
+    // 文件剪贴板这条链的客户端侧前置条件，开一条日志，免得再靠猜。
+    {
+        let lc = session.lc.read().unwrap();
+        log::info!(
+            "landesk: file clipboard state — server_file_transfer_enabled: {}, enable_file_copy_paste: {}, is_default: {}",
+            *session.server_file_transfer_enabled.read().unwrap(),
+            lc.enable_file_copy_paste.v,
+            session.is_default(),
+        );
+    }
     spawn_clipboard_poller(session.clone(), closed.clone());
     std::thread::spawn(move || {
         // 用上游真正的会话入口：它会建好 Data 通道并把 `handler.sender` 接上。

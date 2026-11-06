@@ -3104,6 +3104,9 @@ impl Connection {
                 if !self.send_logon_response_and_keep_alive().await {
                     return false;
                 }
+                // 上游不变量：授权成功的分支都要把这条连接告诉 CM，否则 CM 那边
+                // `is_authorized`/`file_transfer_enabled` 一直是 false，文件剪贴板会被它丢弃。
+                self.try_start_cm(lr.my_id.clone(), lr.my_name.clone(), self.authorized);
             } else if (password::approve_mode() == ApproveMode::Click && !allow_logon_screen_password)
                 || password::approve_mode() == ApproveMode::Both && !password::has_valid_password()
             {

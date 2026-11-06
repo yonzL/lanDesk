@@ -21,6 +21,8 @@ use librustdesk::landesk::session::SessionHandle;
 
 fn main() -> eframe::Result<()> {
     // 库里的日志默认没有安装 logger 会被丢弃；装上后才能看到会话/剪贴板/编码器的实际行为。
+    // 先把产品名设成 lanDesk：`init_log` 用它算日志目录，否则日志会落到 `RustDesk\log\`。
+    *hbb_common::config::APP_NAME.write().unwrap() = "lanDesk".to_owned();
     hbb_common::init_log(false, "client");
     let dir = exe_dir();
     let app = App::new(dir.join("addressbook.json"), dir.join("private.key"));
