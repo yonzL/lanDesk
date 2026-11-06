@@ -581,7 +581,11 @@ pub fn run_book_command(config: &LandeskConfig) -> ResultType<()> {
             .map(|ext| ext.eq_ignore_ascii_case("csv"))
             .unwrap_or(false);
         if is_csv {
-            std::fs::write(target, book.to_csv())
+            // 带 BOM 导出：中文 Windows 上双击时 Excel 才会按 UTF-8 打开，否则会当 GBK 显示乱码，
+            // 存回去还变成非 UTF-8，导致再也导不回来。解析端会把这个 BOM 去掉。
+            let mut data = String::from("\u{feff}");
+            data.push_str(&book.to_csv());
+            std::fs::write(target, data)
                 .map_err(|err| hbb_common::anyhow::anyhow!("writing {}: {err}", target.display()))?;
         } else {
             book.export(target)?;
