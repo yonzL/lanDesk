@@ -218,3 +218,32 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 2. **Git Bash 的 `link.exe`（coreutils）会抢在 MSVC linker 前面**：报 `link: extra operand`。
    vcvars 会把 MSVC 的 `bin\Hostx64\x64` 放进 PATH 前面，正好解决。
 3. 构建缓存会记住旧的错误结果：改了 `VCPKG_ROOT` 后要先 `cargo clean -p magnum-opus -p scrap`。
+
+## 12. Flutter 主界面已接上地址簿（2026-11 本轮）
+
+新增 `flutter/lib/landesk/address_book_page.dart`（**入库**，不是生成物），数据全部来自 Rust：
+
+| Dart 调用 | Rust 实现 | 说明 |
+|---|---|---|
+| `bind.landeskBookList()` | `src/landesk/ffi.rs::book_list` | 返回 JSON 数组：`group/subgroup/name/addr/key/pin/fingerprint` |
+| `bind.landeskBookUpsert(group,subgroup,name,addr,key)` | `book_upsert` | 按 `地址:端口` 覆盖 |
+| `bind.landeskBookRemove(addr)` | `book_remove` | 连带丢掉指纹 |
+| `bind.landeskBookVerify(addr)` | `book_verify` | 操作者核对指纹后标记 |
+| `bind.landeskOpenRemoteWindow(addr)` | `open_remote_window` | 起独立进程开会话窗口 |
+| `bind.landeskIdentityList()` / `landeskListenStatus()` | 同名 | 身份列表 / 监听状态 |
+
+接线方式（全部是薄改）：
+
+- `lib/common/widgets/peer_tab_page.dart`：`entries` 里那一格 `AddressBook(...)` 换成
+  `LandeskAddressBookPage()`；其余四格保留但被模型禁掉。
+- `lib/models/peer_tab_model.dart`：`isEnabled = [false, false, false, !bind.isDisableAb(), false]`
+  ——只有“Address book”这格是开着的，因为最近会话/收藏/发现/我的设备组的数据源（云端账号、CM 目录）
+  在这个 fork 里不存在。
+
+页面行为：2 秒轮询文件（CLI 改完立刻可见）；组/子组两级展开；状态用圆点而非字形
+（灰=从未连接、黄=已钉未核对、绿=已核对）；双击连接；右键菜单连接/标记已验证/看指纹/删除。
+
+**未接的部分（明确记录）**：Flutter 自己的远程会话窗口要复用上游的多窗口链路
+（`desktop_multi_window` + `runMultiWindow`），还没做。所以 `open_remote_window` 现在优先拉起
+同目录的 `landesk-client.exe`（eframe 壳，`dist.sh` 两个 exe 一起发布），找不到才退回用自己
+——双击过去是一个**真能用的**会话窗口，而不是坏按钮。

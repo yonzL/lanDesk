@@ -37,13 +37,10 @@ class PeerTabModel with ChangeNotifier {
     IconFont.addressBook,
     IconFont.deviceGroupFill,
   ];
-  List<bool> isEnabled = List.from([
-    true,
-    true,
-    !isWeb && bind.mainGetLocalOption(key: "disable-discovery-panel") != "Y",
-    !(bind.isDisableAb() || bind.isDisableAccount()),
-    !(bind.isDisableGroupPanel() || bind.isDisableAccount()),
-  ]);
+  // landesk 没有账号、没有云端地址簿、没有 CM 目录：只留“Address book”这一格，
+  // 它装的是本机 `addressbook.json` 的页面。其余四格的数据源都不存在了。
+  List<bool> isEnabled =
+      List.from([false, false, false, !bind.isDisableAb(), false]);
   final List<bool> _isVisible = List.filled(maxTabCount, true, growable: false);
   List<bool> get isVisibleEnabled => () {
         final list = _isVisible.toList();
