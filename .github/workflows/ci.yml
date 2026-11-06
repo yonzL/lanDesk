@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -71,3 +72,71 @@ jobs:
 
 # 说明：Session/文件分发的端到端测试（tests/session_smoke.rs）不在 CI 里跑——
 # 它要起一个 Service 进程并依赖可截屏的桌面会话，在无人的 runner 上不稳定。
+
+  # 打 tag 才发版（`v*`）：复用 main-crate 的 vcpkg/libclang 准备，编 release 两个 exe，
+  # 用 scripts/dist.sh 打出 zip 并附到对应的 GitHub Release。
+  release:
+    name: release / windows
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [main-crate]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      VCPKG_BINARY_SOURCES: clear;files,C:\vcpkg-cache,readwrite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: 缓存 vcpkg 已编译的包
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-opus-libvpx-aom-libyuv-v1
+      - name: 准备 vcpkg 与原生依赖
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:VCPKG_ROOT\vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          }
+          & "$env:VCPKG_ROOT\vcpkg.exe" install opus:x64-windows-static libvpx:x64-windows-static aom:x64-windows-static libyuv:x64-windows-static
+      - name: 确认 libclang 可用
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) {
+            winget install --id LLVM.LLVM --accept-source-agreements --accept-package-agreements --disable-interactivity
+          }
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) {
+            throw "libclang.dll not found at $env:LIBCLANG_PATH"
+          }
+      - name: cargo build --release
+        run: |
+          cargo build --release --bin landesk-server -p rustdesk
+          cargo build --release -p landesk-client
+      # 出包前先确认两个 exe 真的能跑：一个打印版本，一个生成密钥。
+      - name: smoke the built binaries
+        shell: bash
+        run: |
+          set -e
+          ./target/release/landesk-server.exe --version
+          ./target/release/landesk-server.exe --landesk-genkey "$RUNNER_TEMP/smoke.key"
+          test -f "$RUNNER_TEMP/public.key"
+      - name: pack
+        shell: bash
+        run: bash scripts/dist.sh
+      - name: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" dist/*.zip \
+            --title "lanDesk $tag" \
+            --notes "Windows x64. See README for the two-machine setup." \
+            --verify-tag

@@ -1183,15 +1183,8 @@ fn get_recorder(
     #[cfg(not(windows))]
     let root = false;
     let recorder = if record_incoming {
-        use crate::hbbs_http::record_upload;
-
-        let tx = if record_upload::is_enable() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            record_upload::run(rx);
-            Some(tx)
-        } else {
-            None
-        };
+        // 录制上传到云端的通道已移除：只保留本地录制。
+        let tx = None;
         Recorder::new(RecorderContext {
             server: true,
             id: Config::get_id(),
