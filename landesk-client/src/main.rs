@@ -24,6 +24,7 @@ fn main() -> eframe::Result<()> {
     // 先把产品名设成 lanDesk：`init_log` 用它算日志目录，否则日志会落到 `RustDesk\log\`。
     *hbb_common::config::APP_NAME.write().unwrap() = "lanDesk".to_owned();
     hbb_common::init_log(false, "client");
+    paste_watcher::spawn();
     let dir = exe_dir();
     let app = App::new(dir.join("addressbook.json"), dir.join("private.key"));
     let options = eframe::NativeOptions {
@@ -179,6 +180,7 @@ impl App {
             control,
         ) {
             Ok(session) => {
+                paste_watcher::set(Some(session.clone()));
                 self.session = Some(session);
                 self.session_peer = Some(addr.clone());
                 self.selected = Some(addr);
@@ -192,6 +194,7 @@ impl App {
             session.close();
             self.log.push("Disconnected".into());
         }
+        paste_watcher::set(None);
         self.session_peer = None;
         self.texture = None;
         self.last_frame_seq = 0;
@@ -257,6 +260,7 @@ impl App {
                 self.log.push(message);
             }
             self.log.push("Session ended".into());
+            paste_watcher::set(None);
             self.session = None;
             self.session_peer = None;
             self.texture = None;
@@ -582,13 +586,19 @@ impl App {
 
 /// 发一个 Ctrl+<键> 组合（egui 不给我们按键事件时用）。
 fn send_shortcut(session: &SessionHandle, ch: char, alt: bool, shift: bool) {
-    let mut evt = KeyEvent::new();
-    evt.set_chr(ch as u32);
-    evt.down = true;
-    evt.press = true;
-    evt.mode = KeyboardMode::Legacy.into();
-    evt.modifiers = held_modifiers(alt, true, shift);
-    session.send_key(&evt);
+    // 上游客户端对每个按键发一对事件（down 然后 up）；只发 down 会让远端的这个键永远“按着”，
+    // 资源管理器这类应用要求完整的一次按键循环才会真正执行复制/剪切/粘贴。
+    let modifiers = held_modifiers(alt, true, shift);
+    for down in [true, false] {
+        let mut evt = KeyEvent::new();
+        evt.set_chr(ch as u32);
+        evt.down = down;
+        evt.press = down;
+        evt.mode = KeyboardMode::Legacy.into();
+        evt.modifiers = modifiers.clone();
+        session.send_key(&evt);
+    }
+    hbb_common::log::debug!("landesk: sent Ctrl+{ch} as a key pair (modifiers: {})", modifiers.len());
 }
 
 /// 当前按着哪些修饰键（远端据此判定组合键）。
@@ -1037,4 +1047,67 @@ impl eframe::App for App {
             ui.label(format!("Private key: {}", self.key_path.display()));
             ui.small("Key and address book live beside this exe; use --landesk-key / --landesk-book to move them.");
         });    }
+}
+
+/// 文件剪贴板的 Ctrl+V 兜底。
+///
+/// egui-winit 处理 Ctrl+V 时只读取**文本**剪贴板：剪贴板里是文件时它取不到文本，
+/// 于是既不产生 `Event::Paste`，也把 V 键事件吞掉（`egui-winit/src/lib.rs:772`），
+/// 上层完全看不到这次按键。这里用 Win32 的键状态轮询补上这一种情况：
+/// 只在"剪贴板含文件且不含文本"时触发，因此不会和 egui 的文本粘贴重复发送。
+mod paste_watcher {
+    use super::send_shortcut;
+    use librustdesk::landesk::session::SessionHandle;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    fn active() -> &'static Mutex<Option<SessionHandle>> {
+        static ACTIVE: OnceLock<Mutex<Option<SessionHandle>>> = OnceLock::new();
+        ACTIVE.get_or_init(|| Mutex::new(None))
+    }
+
+    pub fn set(session: Option<SessionHandle>) {
+        if let Ok(mut slot) = active().lock() {
+            *slot = session;
+        }
+    }
+
+    pub fn spawn() {
+        std::thread::spawn(|| {
+            let mut was_down = false;
+            loop {
+                std::thread::sleep(Duration::from_millis(30));
+                let down = key_down(VK_CONTROL) && key_down(VK_V);
+                if down && !was_down && files_without_text_on_clipboard() {
+                    let session = active().lock().ok().and_then(|slot| slot.clone());
+                    if let Some(session) = session {
+                        hbb_common::log::debug!("landesk: forwarding Ctrl+V for a file clipboard");
+                        send_shortcut(&session, 'v', false, false);
+                    }
+                }
+                was_down = down;
+            }
+        });
+    }
+
+    const VK_CONTROL: i32 = 0x11;
+    const VK_V: i32 = 0x56;
+    const CF_UNICODETEXT: u32 = 13;
+    const CF_HDROP: u32 = 15;
+
+    extern "system" {
+        fn GetAsyncKeyState(vkey: i32) -> i16;
+        fn IsClipboardFormatAvailable(format: u32) -> i32;
+    }
+
+    fn key_down(vkey: i32) -> bool {
+        // 最高位为 1 表示当前按着
+        (unsafe { GetAsyncKeyState(vkey) } as u16) & 0x8000 != 0
+    }
+
+    fn files_without_text_on_clipboard() -> bool {
+        unsafe {
+            IsClipboardFormatAvailable(CF_HDROP) != 0 && IsClipboardFormatAvailable(CF_UNICODETEXT) == 0
+        }
+    }
 }

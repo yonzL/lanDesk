@@ -153,3 +153,30 @@ landesk 不是新的 UI 外壳，而是**复用上游会话**的新调用方。�
 1. 找到上游该功能读的每个字段/选项（本例：`is_file_clipboard_required` 的三个依赖）；
 2. 反向查找上游**谁把它们设成 true**（`flutter.rs` / `ui/remote.rs` 的构造）；
 3. 逐字段对比我们的构造。缺一个，功能就静默失效，而且日志只显示布尔值，不显示"为什么"。
+
+## 9. egui 的 Ctrl+C/X/V：一条必须自己补的路
+
+`egui-winit` 在按键处理里把这三个组合键**先拦截再 `return`**（`egui-winit/src/lib.rs:764-780`）：
+
+```rust
+if is_cut_command(modifiers, key)      { push(Event::Cut);   return; }
+if is_copy_command(modifiers, key)     { push(Event::Copy);  return; }
+if is_paste_command(modifiers, key) {
+    if let Some(contents) = self.clipboard.get() {      // ← 只读**文本**
+        if !contents.is_empty() { push(Event::Paste(contents)) }
+    }
+    return;                                             // ← 文本为空时什么都不发，键事件也没了
+}
+```
+
+后果分两种情况：
+
+| 情况 | egui 给出的事件 | 我们怎么转给远端 |
+|---|---|---|
+| Ctrl+C / Ctrl+X | `Event::Copy` / `Event::Cut`（无条件） | 合成 `chr('c')`/`chr('x')` 的 down+up 键对，`modifiers` 带 Control |
+| Ctrl+V，本机剪贴板是**文本** | `Event::Paste(text)`（文本里可能为空） | 合成 `chr('v')` 键对 |
+| Ctrl+V，本机剪贴板是**文件** | **什么都没有** | `paste_watcher`：用 `GetAsyncKeyState` 轮询 Ctrl+V，且只在 `CF_HDROP` 存在而 `CF_UNICODETEXT` 不存在时触发，避免与上一条重复发送 |
+
+合成事件必须是**一对**（`down: true` 然后 `down: false`）：上游客户端对每个物理按键都发一对，只发 down 会把这个键在远端永远留在“按下”状态，资源管理器这类应用不会完成一次复制/粘贴。
+
+另外 `modifiers` 字段就是远端的修饰键来源：服务端 `sync_modifiers` → `press_modifiers` 会把列表里没有按下的修饰键按下去（`input_service.rs:1806`），注入完再释放。所以合成事件只要把 Control 放进 `modifiers` 即可，不必自己发 Ctrl 的按下/抬起。
