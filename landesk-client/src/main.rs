@@ -427,6 +427,17 @@ impl App {
         if response.clicked() || response.drag_started() {
             response.request_focus();
         }
+        // egui 0.31 里“窗口是否启用 IME”只看 `platform_output.ime` 是否为 Some（egui-winit 的
+        // `allow_ime = ime.is_some()`），而只有 TextEdit 会设置它。远端画面不是 TextEdit，
+        // 不自己置位的话输入法在本窗口里根本无法组合中文。文本框获得焦点时让给它。
+        if ui.memory(|m| m.focused()).is_none() {
+            ui.ctx().output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    rect,
+                    cursor_rect: egui::Rect::from_min_size(rect.min, egui::vec2(1.0, 1.0)),
+                });
+            });
+        }
         ui.painter().image(
             texture.id(),
             rect,
