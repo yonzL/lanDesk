@@ -88,3 +88,69 @@ README 提到 DRM 包因为"根服务要适配新的 user-session runtime"而暂
 | 局域网发现 | ❌ | ✅ mDNS |
 | 文件分发到多台 | ✅（同一批文件扇出） | ❌（仅普通文件传输） |
 | 用户令牌的 CM | ✅ 无界面 `--landesk-cm` | ✅（2.0 的 user-session runtime） |
+
+## 3. 远程会话窗口：两条链路到底差在哪（2026-11 调研）
+
+结论先说：**窗口这一层完全相同，差别全在拨号层**。SubnetDesk 的 Flutter 会话窗口是上游原样，
+没有任何局域网专用代码；我们之所以需要额外接线，是因为保留了一层「目标注册表」。
+
+### 3.1 SubnetDesk（上游 2.0 形状）
+
+```
+地址簿双击 / --connect <host:port>
+  → connect()                (flutter/lib/common.dart:2756)
+  → connectMainDesktop()     (common.dart:2729)
+  → rustDeskWinManager.newRemoteDesktop(id)   (multi_window_manager.dart:272)
+  → DesktopMultiWindow.createWindow(msg)      ← 独立窗口，参数只有 {type, id, password}
+新窗口 Dart（argv: multi_window <id> <json>）
+  → runMultiWindow → DesktopRemoteScreen → ConnectionTabPage → RemotePage
+  → FFI.start(id) → bind.sessionAddSync(...) 建 Session<FlutterHandler>
+                  → bind.sessionStart(...)   → src/flutter.rs:1489 spawn io_loop
+  → io_loop → Client::start(peer)  (src/client/io_loop.rs:208)
+  → Client::start 自己就是 LAN 拨号器 (src/client.rs:251)：
+      Endpoint::parse(peer) → 候选列表 → TCP → lan_protocol::client_handshake
+```
+
+要点：**peer id 就是 endpoint**。`Client::start` 里直接 `Endpoint::parse(peer)` 并拨号，
+所以 UI 层（含 Flutter 多窗口）完全不需要知道「这次是局域网连接」——上游原代码即可工作。
+它为此新增的 FFI 只有登录体验相关的 `session_login_lan` / `session_login_lan_identity`
+（用户/密码或身份选择），与窗口链路无关。
+
+### 3.2 我们（1.5.1 形状 + landesk 前置层）
+
+窗口链路与它逐行相同（`connect` → `newRemoteDesktop` → `createWindow` → `FFI.start`），
+差别在 `Client::_start`：上游 1.5.1 的 `_start` 是「rendezvous → 直连 IP → relay」三段式，
+我们把 landesk 直连插在最前面，条件是**本进程登记过这个 peer**：
+
+```rust
+if let Some(target) = crate::landesk::session::take_target(peer) {   // 注册表
+    connect_authenticated(peer, &target.book, &target.key, target.control).await?
+} else if crate::landesk::is_landesk() {
+    bail!("landesk: {peer} is not a registered target …")            // 其余分支一律不走
+}
+```
+
+这层注册表是给 eframe 壳（`landesk::session::start` 自己构造 `Session<LandeskUi>`）准备的：
+`book` / `key` / `control` 由调用方带着走。代价是**同一进程里必须先注册**——这正是
+Flutter 会话窗口（独立进程，由上游 `session_add`/`session_start` 驱动）撞上的墙。
+
+### 3.3 该收敛成 SubnetDesk 那样
+
+eframe 壳本轮删掉之后，注册表就没有「进程内另一个入口」这个用途了。收敛方向：
+
+- `client::_start` 在 landesk 模式下**自己去解析**（地址簿里该地址钉的身份，否则默认私钥；
+  `control` 默认 true，将来由界面传），即 `connection_inputs(peer)`；
+- 已登记的目标仍然优先（CLI 用 `--landesk-book` / `--landesk-key` 指向临时文件的场景，
+  以及 `--landesk-push` / 冒烟脚本），只是**不再要求**先登记；
+- 于是 Flutter 会话窗口的 `session_start` 不需要任何预备调用，链路回到上游原样。
+
+差别清单（供后续比对）：
+
+| 关注点 | SubnetDesk | 我们 |
+|---|---|---|
+| peer id 形态 | `hbb_common::lan::Endpoint`（共享类型，含校验） | `host:port` 字符串，解析分散在几处 |
+| 拨号入口 | `Client::start` 即 LAN 拨号器（无注册表） | `_start` 里查注册表，再走 `transport::connect_authenticated` |
+| 身份来源 | 用户/密码 + 可记住的凭据（`lan_access_username`） | 全局密钥对（双向签名），服务端绑公钥集合 |
+| 主机身份 | `lan_protocol::client_handshake` 验设备公钥 + TOFU | `AuthNonce.host_pk + host_proof` + `PinnedHosts` TOFU |
+| 会话窗口接线 | 无（上游原样） | 本轮将改为无（收敛后） |
+| 候选/重试 | `connection_candidates` + mDNS 发现回退 | 单地址，不重试候选 |

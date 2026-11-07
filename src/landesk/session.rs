@@ -44,6 +44,11 @@ pub(crate) fn register_target(peer: &str, target: Target) {
     targets().lock().unwrap().insert(peer.to_owned(), target);
 }
 
+/// 给即将开始的一次直连登记目标（Flutter 会话窗口用：它不构造 `Session<LandeskUi>`）。
+pub(crate) fn register_connection(peer: &str, book: PathBuf, key: PathBuf, control: bool) {
+    register_target(peer, Target { book, key, control });
+}
+
 /// 取走并移除：一次连接只用一次。
 pub(crate) fn take_target(peer: &str) -> Option<Target> {
     targets().lock().unwrap().remove(peer)

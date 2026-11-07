@@ -3048,7 +3048,7 @@ pub fn landesk_listen_status() -> String {
     crate::landesk::ffi::listen_status()
 }
 
-/// 开会话窗口：起一个 `--landesk-remote <addr>` 子进程（一个会话一个进程）。
-pub fn landesk_open_remote_window(addr: String) -> String {
-    crate::landesk::ffi::open_remote_window(&addr)
+/// 会话窗口要的：在 `sessionStart` 之前把这次直连的目标登记到本进程。
+pub fn landesk_prepare_session(addr: String) -> String {
+    crate::landesk::ffi::prepare_session(&addr)
 }

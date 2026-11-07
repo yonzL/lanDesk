@@ -3,8 +3,8 @@
 //! 全部放在**默认构建**里：既能被 `cargo check`/测试覆盖，也让 `flutter_ffi.rs` 只留一层薄封装。
 //! 返回字符串的约定统一为：成功 = JSON（或空串），失败 = 以 `error:` 开头的可读原因。
 //!
-//! 会话**不在这个进程里开**：界面调用 [`open_remote_window`]，我们起一个 `--landesk-remote <addr>`
-//! 的子进程，一个会话一个进程（崩溃隔离、输入法与剪贴板天然按窗口隔离）。
+//! 会话本身走**上游的 Flutter 会话链路**：界面在会话窗口里先调 [`prepare_session`] 把目标登记到
+//! 本进程，再交给上游的 `sessionStart` 拨号（`client::_start` 会取走这份目标）。
 
 use base::config::keys;
 use serde_derive::Serialize;
@@ -162,35 +162,42 @@ pub fn listen_status() -> String {
     }
 }
 
-/// 在独立进程里打开一个远程会话窗口（一个会话一个进程，界面不跟会话同生共死）。
+/// 给“这个进程里即将开始的一次 landesk 直连”登记目标。
 ///
-/// Flutter 壳的远程会话窗口还没接（要复用上游的多窗口链路），所以这里优先拉起同目录的
-/// `landesk-client.exe`（eframe 壳，`dist.sh` 里两个 exe 一起发布），没有它就把原因说清楚。
-pub fn open_remote_window(addr: &str) -> String {
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(err) => return format!("error:cannot find our own exe: {err}"),
+/// Flutter 的会话窗口是独立进程：窗口里的 Dart 在 `sessionStart` 之前调它，我们的拨号器
+/// （`client::_start`）才能在同一个进程里 `take_target(addr)` 并走 keyauth 直连，而不是去 rendezvous。
+pub fn prepare_session(addr: &str) -> String {
+    if !addr.contains(':') {
+        return "error:the address needs a port, e.g. 10.0.0.5:21118".to_owned();
+    }
+    let book = match load_book() {
+        Ok(book) => book,
+        Err(err) => return err,
     };
-    let sibling = exe.with_file_name(if cfg!(windows) {
-        "landesk-client.exe"
-    } else {
-        "landesk-client"
-    });
-    if !sibling.is_file() {
-        // 与其静默什么也不发生，不如把“这个壳还开不了会话”说清楚。
-        return format!(
-            "error:{} is missing, so this build cannot open a session window yet",
-            sibling.display()
-        );
+    let key = match identity_for(&book, addr) {
+        Some(key) => key,
+        None => return "error:no client identity: import or generate a key first".to_owned(),
+    };
+    crate::landesk::session::register_connection(
+        addr,
+        book_path(),
+        key,
+        true,
+    );
+    String::new()
+}
+
+/// 这台机器用哪个身份：地址簿里该地址钉的身份优先，其次默认私钥。
+fn identity_for(
+    book: &AddressBook,
+    addr: &str,
+) -> Option<std::path::PathBuf> {
+    if let Some(name) = book.get(addr).and_then(|entry| entry.key.as_deref()) {
+        if let Some(path) = crate::landesk::resolve_identity(name) {
+            return Some(path);
+        }
     }
-    match std::process::Command::new(sibling)
-        .arg("--landesk-remote")
-        .arg(addr)
-        .spawn()
-    {
-        Ok(_) => String::new(),
-        Err(err) => format!("error:cannot open a remote window for {addr}: {err}"),
-    }
+    crate::landesk::default_identity()
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../common.dart';
 import '../models/platform_model.dart';
+import '../utils/multi_window_manager.dart';
 
 /// lanDesk 的主界面：只看本机 `addressbook.json`，不连任何服务器。
 ///
@@ -105,9 +106,12 @@ class _LandeskAddressBookPageState extends State<LandeskAddressBookPage> {
   }
 
   Future<void> _open(_Entry entry) async {
-    final err = await bind.landeskOpenRemoteWindow(addr: entry.addr);
-    if (err.isNotEmpty) {
-      _toast(err.replaceFirst('error:', ''));
+    // 走上游原本的多窗口路径：新窗口是一个独立进程，窗口里的 RemotePage 在 start 前会先把
+    // 这个地址登记给 Rust 的拨号器（见 remote_page.dart 的 _startLandesk）。
+    try {
+      await rustDeskWinManager.newRemoteDesktop(entry.addr);
+    } catch (err) {
+      _toast('无法打开会话窗口：$err');
     }
   }
 
