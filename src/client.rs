@@ -434,11 +434,34 @@ impl Client {
         if config::is_incoming_only() && !is_switch_sides_back(conn_type, &interface).await {
             bail!("Incoming only mode");
         }
-        // landesk：这次连接要么是登记过的目标（CLI 显式指定地址簿/密钥），
-        // 要么就从地址簿与默认身份自己解析——两者都走同一条已认证的直连，
-        // 不走 rendezvous、也不走上游的直连 IP / 域名分支（那条绕过了密钥鉴权）。
+        // landesk：显式登记过的目标（CLI 给了地址簿/密钥、或会话层自己建的会话）：
+        // 用它的路径走已认证直连。
+        if let Some(target) = crate::landesk::session::take_target(peer) {
+            log::info!("landesk: using the authenticated path for {peer}");
+            let authenticated = crate::transport::connect_authenticated(
+                peer,
+                &target.book,
+                &target.key,
+                target.control,
+            )
+            .await?;
+            return Ok((
+                (
+                    hbb_common::Stream::Tcp(authenticated.stream),
+                    true,
+                    Some(authenticated.host_pk.to_vec()),
+                    None,
+                    "landesk",
+                ),
+                (0, String::new()),
+                false,
+            ));
+        }
+        // landesk：没有登记也要能连——Flutter 的会话窗口是上游 `session_add`/`session_start`
+        // 驱动的新进程，它不会（也不应该）先登记。这里像 SubnetDesk 的 `Client::start` 那样，
+        // 直接把 `peer` 当 `host:port`，从地址簿与默认身份自己解析。
         if crate::landesk::is_landesk() {
-            let (book, key) = crate::landesk::session::connection_inputs(peer)?;
+            let (book, key) = crate::landesk::session::default_inputs(peer)?;
             log::info!("landesk: using the authenticated path for {peer}");
             let authenticated =
                 crate::transport::connect_authenticated(peer, &book, &key, true).await?;

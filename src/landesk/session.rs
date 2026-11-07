@@ -50,15 +50,13 @@ pub(crate) fn register_connection(peer: &str, book: PathBuf, key: PathBuf, contr
     register_target(peer, Target { book, key, control });
 }
 
-/// 这次直连用哪份地址簿、哪把私钥、是否申请控制权。
+/// 这次直连用哪份地址簿、哪把私钥：**没有显式登记时**才自己解析。
 ///
-/// 显式登记过的目标优先（调用方指定的路径）；否则**像 SubnetDesk 的 `Client::start` 那样自己解析**：
-/// `peer` 就是 `host:port`，身份取地址簿里该地址钉的那把，没有就用默认私钥。
-/// 这样 Flutter 的会话窗口（上游 `session_add`/`session_start` 驱动、独立进程）不需要任何预备调用。
-pub(crate) fn connection_inputs(peer: &str) -> ResultType<(PathBuf, PathBuf)> {
-    if let Some(target) = take_target(peer) {
-        return Ok((target.book, target.key));
-    }
+/// 显式登记（CLI 的 `--landesk-book`/`--landesk-key`、`--landesk-push`、冒烟脚本）优先；
+/// 否则像 SubnetDesk 的 `Client::start` 那样：`peer` 就是 `host:port`，身份取地址簿里该地址钉的那把，
+/// 没有就用默认私钥。于是 Flutter 的会话窗口（上游 `session_add`/`session_start` 驱动、独立进程）
+/// 不需要任何预备调用。
+pub(crate) fn default_inputs(peer: &str) -> ResultType<(PathBuf, PathBuf)> {
     let config = crate::landesk::config();
     let book = config
         .as_ref()
