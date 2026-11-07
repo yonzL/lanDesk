@@ -25,7 +25,10 @@ landesk 不重写 RustDesk 的会话协议。视频、输入、剪贴板、文�
 
 1. Master 按地址簿里的 `主机:端口` 直连 Service（默认端口 `21118`，安装时可改）。监听只接受**私有网段来源**（默认 RFC1918 + 100.64/10 + 链路本地 + IPv6 私有段），公网来源在握手前就被丢弃；需要放开时用 `--landesk-allow-network` / `landesk.json` 的 `allowed_networks` 显式配。
 
-   监听由**监督循环**维护（`src/transport.rs::supervise`）：绑定失败每秒重试并在日志里说明原因（端口被占不再等于这台机器失联到下次重启）；`landesk.json` 里的端口或白名单变了，1 秒内重绑，已有会话不受影响。运行状态写到 exe 同目录的 `landesk-status.json`（`starting` / `listening` / `failed` + 端口 + 原因 + 时间），`--landesk-doctor` 直接读它。
+   监听由**监督循环**维护（`src/transport.rs::supervise`）：绑定失败每秒重试并在日志里说明原因（端口被占不再等于这台机器失联到下次重启）；`landesk.json` 里的端口或白名单变了，1 秒内重绑，已有会话不受影响。
+   **例外：命令行给的端口/白名单优先，且永远优先**——`--landesk-listen` 或 `--landesk-allow-network`
+   给过之后，服务不再读文件里的这两项（临时实例与测试靠的就是这个）。那种情况下改文件不会重绑，
+   也不会有“已重绑”的日志；要换配置就得重启服务。运行状态写到 exe 同目录的 `landesk-status.json`（`starting` / `listening` / `failed` + 端口 + 原因 + 时间），`--landesk-doctor` 直接读它。
 2. Service 下发随机挑战；Master 用**全局私钥**签名并回送，同时声明本次请求的角色（控制 / 观看）。
 3. Service 用安装时绑定的**公钥**验签；失败立即断开。
 4. Service 用**自己的主机密钥**签回 Master 的挑战；Master 拿结果与自己地址簿里记的指纹比对。

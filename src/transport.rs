@@ -260,3 +260,37 @@ fn summarize_networks(list: &[String]) -> String {
         list.join(",")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::landesk::ListenSpec;
+
+    fn spec(port: u16, list: &[&str]) -> ListenSpec {
+        ListenSpec {
+            port,
+            allowed_networks: list.iter().map(|value| value.to_string()).collect(),
+        }
+    }
+
+    /// 重绑日志要说清“到底变了什么”：只有白名单变了时不能只说 port。
+    #[test]
+    fn describe_spec_change_names_the_part_that_changed() {
+        assert_eq!(
+            describe_spec_change(&spec(21118, &[]), &spec(21119, &[])),
+            "port 21118 -> 21119"
+        );
+        assert_eq!(
+            describe_spec_change(&spec(21118, &[]), &spec(21118, &["10.0.0.0/8"])),
+            "allowlist default private ranges -> 10.0.0.0/8"
+        );
+        assert_eq!(
+            describe_spec_change(&spec(21118, &["10.0.0.0/8"]), &spec(21118, &[])),
+            "allowlist 10.0.0.0/8 -> default private ranges"
+        );
+        assert_eq!(
+            describe_spec_change(&spec(21118, &["10.0.0.0/8"]), &spec(21118, &["10.0.0.0/8"])),
+            "no visible difference"
+        );
+    }
+}

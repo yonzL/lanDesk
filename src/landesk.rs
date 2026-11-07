@@ -522,7 +522,9 @@ pub fn run_doctor() -> ResultType<()> {
             }
             match status.state.as_str() {
                 "listening" => {
-                    // 真探一下：监听者（服务）会接受本地连接；没人在听则 connect 失败。
+                    // 只能证明“这个端口上有人接受 TCP”：端口被别的程序占着也会通。所以话术不说成
+                    // “服务在监听”——要确认身份得做完一次真握手，自检不发起。（曾经拿陈旧文件当真相，
+                    // 这里再留一句就白改了。）
                     let addr = format!("127.0.0.1:{}", status.port);
                     let reachable = addr
                         .parse()
@@ -536,7 +538,10 @@ pub fn run_doctor() -> ResultType<()> {
                         })
                         .is_some();
                     if reachable {
-                        println!("  [ ok ] 服务正在监听端口 {}{since}", status.port);
+                        println!(
+                            "  [ ok ] 端口 {} 上有人在监听（状态文件说这是本服务；要确认身份就真连一次）{}",
+                            status.port, since
+                        );
                     } else {
                         println!(
                             "  [warn] 状态文件写着 listening（端口 {}{since}），但现在连不上：服务可能已退出，状态陈旧",
@@ -912,6 +917,32 @@ mod tests {
         assert!(file.auth_key.is_none(), "legacy auth_key survived");
         assert_eq!(file.public_keys(), vec![keep]);
     }
+
+    /// 状态没变时 `since` 必须保留：否则“已经失败了多久”会被每秒一次的重试刷成 0。
+    #[test]
+    fn since_is_kept_while_the_state_is_unchanged() {
+        let previous = ListenStatus {
+            state: "failed".to_owned(),
+            port: 21118,
+            error: "address already in use".to_owned(),
+            since: 1_700_000_000,
+        };
+        let later = 1_700_000_500;
+        assert_eq!(
+            next_since(Some(&previous), "failed", 21118, "address already in use", later),
+            1_700_000_000
+        );
+        assert_eq!(
+            next_since(Some(&previous), "failed", 21118, "permission denied", later),
+            later
+        );
+        assert_eq!(
+            next_since(Some(&previous), "failed", 21119, "address already in use", later),
+            later
+        );
+        assert_eq!(next_since(Some(&previous), "listening", 21118, "", later), later);
+        assert_eq!(next_since(None, "starting", 21118, "", later), later);
+    }
 }
 
 /// 监听参数：监督循环用它判断"配置有没有变，需不需要重绑"。
@@ -982,17 +1013,7 @@ pub fn publish_listen_status(state: &str, port: u16, error: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default();
-    // `since` 表示“这个状态从什么时候开始”，所以状态没变时（例如每秒重试失败）保留旧值，
-    // 否则它只会反映最后一次尝试。
-    let unchanged = previous
-        .as_ref()
-        .map(|p| (p.state.as_str(), p.port, p.error.as_str()) == (state, port, error))
-        .unwrap_or(false);
-    let since = if unchanged {
-        previous.as_ref().map(|p| p.since).unwrap_or(now)
-    } else {
-        now
-    };
+    let since = next_since(previous.as_ref(), state, port, error, now);
     let status = ListenStatus {
         state: state.to_owned(),
         port,
@@ -1012,6 +1033,19 @@ pub fn publish_listen_status(state: &str, port: u16, error: &str) {
             "failed" => log::warn!("landesk: listener state=failed port={port}: {error}"),
             other => log::info!("landesk: listener state={other} port={port}"),
         }
+    }
+}
+
+/// `since` 表示“这个状态从什么时候开始”：状态没变时（例如每秒重试失败）保留旧值，
+/// 否则它只会反映最后一次尝试。
+fn next_since(previous: Option<&ListenStatus>, state: &str, port: u16, error: &str, now: i64) -> i64 {
+    let unchanged = previous
+        .map(|p| (p.state.as_str(), p.port, p.error.as_str()) == (state, port, error))
+        .unwrap_or(false);
+    if unchanged {
+        previous.map(|p| p.since).unwrap_or(now)
+    } else {
+        now
     }
 }
 

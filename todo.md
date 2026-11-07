@@ -80,6 +80,11 @@
 
 按建议顺序排列；每条都写了“为什么还没做”与“从哪开始”。
 
+### 已完成的里程碑（本轮）
+
+- [x] **Flutter 主界面成为正式界面**：`master/landesk-master.exe` 读地址簿 → 双击 → 独立进程的会话窗口。发布版 75MB、整包 69MB，实测桌面镜像正常
+- [x] **密钥轮换（Win10 已完成并验证）**：新私钥 `run-client/private.key`；实测新钥通过、泄露的旧钥 `reject key-not-allowed`
+
 ### 高优先
 
 - [x] **`hbbs_http` 收尾清理**：模块删除（1844 行），通用 HTTP 客户端缩到 114 行（`create_http_client_async` + `get_url_for_tls`，只给 `common::post_request` 用）；Pro 同步、账号 OIDC、录制上传、“Web 控制台踢下线”信号一并消失；flutter-only 的下载器/更新钩子也删了

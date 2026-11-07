@@ -55,7 +55,10 @@ jobs:
             git clone --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
             & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           }
-          & "$env:VCPKG_ROOT\vcpkg.exe" install opus:x64-windows-static libvpx:x64-windows-static aom:x64-windows-static libyuv:x64-windows-static
+          # 根目录有 vcpkg.json：清单模式会拒绝逐包参数，而且要靠 overlay 的版本钉（aom/libyuv）。
+          # 显式 --x-install-root 是为了让 build.rs 的 <VCPKG_ROOT>/installed/<triplet> 找得到。
+          $env:VCPKG_DEFAULT_HOST_TRIPLET = "x64-windows-static"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows-static --x-install-root="$env:VCPKG_ROOT/installed"
       - name: 确认 libclang 可用
         shell: pwsh
         run: |
@@ -107,7 +110,10 @@ jobs:
             git clone --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
             & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           }
-          & "$env:VCPKG_ROOT\vcpkg.exe" install opus:x64-windows-static libvpx:x64-windows-static aom:x64-windows-static libyuv:x64-windows-static
+          # 根目录有 vcpkg.json：清单模式会拒绝逐包参数，而且要靠 overlay 的版本钉（aom/libyuv）。
+          # 显式 --x-install-root 是为了让 build.rs 的 <VCPKG_ROOT>/installed/<triplet> 找得到。
+          $env:VCPKG_DEFAULT_HOST_TRIPLET = "x64-windows-static"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows-static --x-install-root="$env:VCPKG_ROOT/installed"
       - name: 确认 libclang 可用
         shell: pwsh
         run: |

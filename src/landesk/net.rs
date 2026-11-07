@@ -61,10 +61,10 @@ pub fn configured() -> Vec<String> {
 }
 
 /// 解析后的白名单；配置有问题时记一条 warn 并退回默认值，不因此拒绝所有连接。
-pub fn load() -> Vec<IpNet> {
-    parse_or_default(&configured())
-}
-
+///
+/// 这里故意不留“启动时读一次”的入口：曾经的 `load()` 返回 `OnceLock` 缓存，让改完配置的服务
+/// 看起来生效、实际还是旧列表。需要白名单的地方都用 `parse_or_default(&configured())`，
+/// 每次拿当下这份（`configured()` 也每次重读）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,7 +112,7 @@ mod tests {
     }
 }
 
-/// 与 `load()` 同样的解析，但接受一份显式的字符串列表（监督循环用它，以便配置变更立即生效）。
+/// 接受一份显式的字符串列表（监督循环每次重绑都重新传，所以配置变更立即生效）。
 pub fn parse_or_default(configured: &[String]) -> Vec<IpNet> {
     match parse(configured) {
         Ok(nets) => {
