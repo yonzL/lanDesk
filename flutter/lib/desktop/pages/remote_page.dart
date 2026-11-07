@@ -177,26 +177,18 @@ class _RemotePageState extends State<RemotePage>
       }
     });
     _ffi.canvasModel.initializeEdgeScrollFallback(this);
-    // 上游原本在这里直接 `_ffi.start(...)`。lanDesk 的会话是直连：窗口进程里先把这个地址登记给
-    // 拨号器（`client::_start` 会取走它并走 keyauth），再交给上游同一个 `start`。
-    void startSession() {
-      _ffi.start(
-        widget.id,
-        password: widget.password,
-        isSharedPassword: widget.isSharedPassword,
-        switchUuid: widget.switchUuid,
-        forceRelay: widget.forceRelay,
-        tabWindowId: widget.tabWindowId,
-        display: widget.display,
-        displays: widget.displays,
-      );
-    }
-
-    if (bind.landeskBuild()) {
-      _startLandesk(startSession);
-    } else {
-      startSession();
-    }
+    // lanDesk 的会话是直连：`peer` 就是 `host:port`，Rust 侧的拨号器（`client::_start`）
+    // 自己从地址簿解析身份并走 keyauth，所以这里直接上游原本的 `start`，不需要预备调用。
+    _ffi.start(
+      widget.id,
+      password: widget.password,
+      isSharedPassword: widget.isSharedPassword,
+      switchUuid: widget.switchUuid,
+      forceRelay: widget.forceRelay,
+      tabWindowId: widget.tabWindowId,
+      display: widget.display,
+      displays: widget.displays,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       _ffi.dialogManager
@@ -245,21 +237,6 @@ class _RemotePageState extends State<RemotePage>
     if (_ffi.ffiModel.pi.isSet.value) {
       unawaited(_normalizeWaylandKeyboardModeIfNeeded());
     }
-  }
-
-  /// lanDesk：先登记直连目标，再走上游的 `start`。登记失败就不启动，把原因显示出来。
-  Future<void> _startLandesk(void Function() startSession) async {
-    final err = await bind.landeskPrepareSession(addr: widget.id);
-    if (!mounted) return;
-    if (err.isNotEmpty) {
-      showToast(err.replaceFirst('error:', ''));
-      _ffi.dialogManager.showLoading(
-        translate('Connection error'),
-        onCancel: closeConnection,
-      );
-      return;
-    }
-    startSession();
   }
 
   Future<void> _normalizeWaylandKeyboardModeIfNeeded() async {

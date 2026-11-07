@@ -434,16 +434,14 @@ impl Client {
         if config::is_incoming_only() && !is_switch_sides_back(conn_type, &interface).await {
             bail!("Incoming only mode");
         }
-        // landesk：这次连接是我们自己登记过的目标，就用已认证的那条流，不走 rendezvous。
-        if let Some(target) = crate::landesk::session::take_target(peer) {
+        // landesk：这次连接要么是登记过的目标（CLI 显式指定地址簿/密钥），
+        // 要么就从地址簿与默认身份自己解析——两者都走同一条已认证的直连，
+        // 不走 rendezvous、也不走上游的直连 IP / 域名分支（那条绕过了密钥鉴权）。
+        if crate::landesk::is_landesk() {
+            let (book, key) = crate::landesk::session::connection_inputs(peer)?;
             log::info!("landesk: using the authenticated path for {peer}");
-            let authenticated = crate::transport::connect_authenticated(
-                peer,
-                &target.book,
-                &target.key,
-                target.control,
-            )
-            .await?;
+            let authenticated =
+                crate::transport::connect_authenticated(peer, &book, &key, true).await?;
             return Ok((
                 (
                     hbb_common::Stream::Tcp(authenticated.stream),
@@ -455,14 +453,6 @@ impl Client {
                 (0, String::new()),
                 false,
             ));
-        }
-        // landesk：只连“本进程已经登记过的目标”（会话层在建立时会登记）。
-        // 下面这些分支属于上游的“直连 IP / 域名”与协调器模型，本构建一律不走：
-        // 它们绕过密钥鉴权，也不是这个产品的连接方式。
-        if crate::landesk::is_landesk() {
-            bail!(
-                "landesk: {peer} is not a registered target (this build has no rendezvous or relay path)"
-            );
         }
         // to-do: remember the port for each peer, so that we can retry easier
         if hbb_common::is_ip_str(peer) {

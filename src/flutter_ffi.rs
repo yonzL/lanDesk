@@ -3048,7 +3048,3 @@ pub fn landesk_listen_status() -> String {
     crate::landesk::ffi::listen_status()
 }
 
-/// 会话窗口要的：在 `sessionStart` 之前把这次直连的目标登记到本进程。
-pub fn landesk_prepare_session(addr: String) -> String {
-    crate::landesk::ffi::prepare_session(&addr)
-}

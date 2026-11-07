@@ -162,44 +162,6 @@ pub fn listen_status() -> String {
     }
 }
 
-/// 给“这个进程里即将开始的一次 landesk 直连”登记目标。
-///
-/// Flutter 的会话窗口是独立进程：窗口里的 Dart 在 `sessionStart` 之前调它，我们的拨号器
-/// （`client::_start`）才能在同一个进程里 `take_target(addr)` 并走 keyauth 直连，而不是去 rendezvous。
-pub fn prepare_session(addr: &str) -> String {
-    if !addr.contains(':') {
-        return "error:the address needs a port, e.g. 10.0.0.5:21118".to_owned();
-    }
-    let book = match load_book() {
-        Ok(book) => book,
-        Err(err) => return err,
-    };
-    let key = match identity_for(&book, addr) {
-        Some(key) => key,
-        None => return "error:no client identity: import or generate a key first".to_owned(),
-    };
-    crate::landesk::session::register_connection(
-        addr,
-        book_path(),
-        key,
-        true,
-    );
-    String::new()
-}
-
-/// 这台机器用哪个身份：地址簿里该地址钉的身份优先，其次默认私钥。
-fn identity_for(
-    book: &AddressBook,
-    addr: &str,
-) -> Option<std::path::PathBuf> {
-    if let Some(name) = book.get(addr).and_then(|entry| entry.key.as_deref()) {
-        if let Some(path) = crate::landesk::resolve_identity(name) {
-            return Some(path);
-        }
-    }
-    crate::landesk::default_identity()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

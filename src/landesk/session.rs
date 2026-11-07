@@ -44,9 +44,38 @@ pub(crate) fn register_target(peer: &str, target: Target) {
     targets().lock().unwrap().insert(peer.to_owned(), target);
 }
 
-/// 给即将开始的一次直连登记目标（Flutter 会话窗口用：它不构造 `Session<LandeskUi>`）。
+/// 给即将开始的一次直连登记目标（显式指定地址簿/密钥的调用方用：CLI 的
+/// `--landesk-book`/`--landesk-key`、`--landesk-push`与冒烟脚本）。
 pub(crate) fn register_connection(peer: &str, book: PathBuf, key: PathBuf, control: bool) {
     register_target(peer, Target { book, key, control });
+}
+
+/// 这次直连用哪份地址簿、哪把私钥、是否申请控制权。
+///
+/// 显式登记过的目标优先（调用方指定的路径）；否则**像 SubnetDesk 的 `Client::start` 那样自己解析**：
+/// `peer` 就是 `host:port`，身份取地址簿里该地址钉的那把，没有就用默认私钥。
+/// 这样 Flutter 的会话窗口（上游 `session_add`/`session_start` 驱动、独立进程）不需要任何预备调用。
+pub(crate) fn connection_inputs(peer: &str) -> ResultType<(PathBuf, PathBuf)> {
+    if let Some(target) = take_target(peer) {
+        return Ok((target.book, target.key));
+    }
+    let config = crate::landesk::config();
+    let book = config
+        .as_ref()
+        .map(|config| config.book_path())
+        .unwrap_or_else(|| crate::landesk::exe_dir().join("addressbook.json"));
+    let key_from_book = crate::addressbook::AddressBook::load(&book)
+        .ok()
+        .and_then(|book| book.get(peer).and_then(|entry| entry.key.clone()))
+        .and_then(|name| crate::landesk::resolve_identity(&name));
+    let key = key_from_book
+        .or_else(crate::landesk::default_identity)
+        .ok_or_else(|| {
+            hbb_common::anyhow::anyhow!(
+                "landesk: no client identity (import or generate a private key first)"
+            )
+        })?;
+    Ok((book, key))
 }
 
 /// 取走并移除：一次连接只用一次。
