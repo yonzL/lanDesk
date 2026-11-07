@@ -212,7 +212,7 @@ landesk-server.exe --landesk-host-key host.pub           # 同时导出公钥文
 **一步把新 Master 加进多台 Service：** 服务端会自动建好公钥目录 `<exe 目录>/landesk.d/clients/`，里面一个文件一把公钥。在 Master 上执行一次即可（它会先问对端这个目录在哪，再用文件会话把公钥推过去）：
 
 ```bash
-landesk-server.exe --landesk-enroll 192.168.99.191:21118,192.168.99.239:21118 --landesk-key master.key
+landesk-server.exe --landesk-enroll 192.168.99.191:21118,192.168.99.192:21118 --landesk-key master.key
 ```
 
 撤销某台 Master：删掉它那个 `.pub` 文件，或 `--landesk-revoke-client`。两种方式都从下一次连接起生效。

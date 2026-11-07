@@ -131,5 +131,5 @@
 
 - [x] **`master.key` 与 `.av1e/k.key` 曾进公开仓库**（`84f6448` / `5af568c`）→ 已从树中移除并 `*.key` 进 gitignore。
 - [x] **轮换主控密钥（Win10 `192.168.99.191` 已完成）**：新私钥 `run-client/private.key`（公钥 `0d42a5b6…`），VM 的 `landesk.json` 只剩新公钥；实测新钥 exit 0、泄露的旧钥 `reject key-not-allowed`。
-- [ ] **Win11 `192.168.99.239` 待轮换**：整机不通（SSH/ping/端口全无响应，估计关机）。开机后改 `C:dandesk.json` 为 `{"listen_port": 21118, "auth_keys": ["0d42a5b6…"]}` 并 `Restart-Service lanDesk`。
+- [x] **Win11 `192.168.99.239`：已下线，不再轮换**——那台虚拟机已经不存在了；它绑过的旧公钥随机器一起作废。
 - [ ] `.av1e/k.key` 只是临时目录里的测试密钥，绑定的临时服务已删，无需撤销；但同样视为已泄露。
