@@ -1,6 +1,6 @@
 # Flutter 界面路线（先决条件与差距）
 
-目标：正式版用 Flutter（上游 RustDesk 的那套 UI 资产），当前先用 eframe 交付。
+目标：界面用 Flutter（上游 RustDesk 的那套 UI 资产）——已完成；eframe 壳已删。
 本文记录**为什么这件事不是"换个 UI"**，以及要做的具体步骤与顺序。
 
 ## 1. 现状事实
@@ -12,7 +12,7 @@
 | 生成的桥文件 | `flutter/lib/generated_bridge.dart`、`src/bridge_generated*.rs` 都是 gitignore 的，CI 里由 codegen 生成 |
 | Flutter SDK | `D:\dev_ai\_tools\flutter.zip`（1.9GB），未解包，`flutter` 不在 PATH |
 | 我们的 FFI 面 | `src/flutter_ffi.rs` 是上游的；**landesk 的能力（按地址开会话、地址簿 CRUD、密钥/身份、文件分发）都不在里面** |
-| 我们现在的 UI | eframe/egui（约 1400 行），已实现 QQ 形态、画质/编码器/剪贴板/声音开关、文件分发、身份管理 |
+| 我们现在的 UI | Flutter：主窗口读本机地址簿，双击开 Flutter 会话窗口（`flutter/lib/landesk/address_book_page.dart`） |
 
 ## 2. 三条必须先解决的事（按依赖顺序）
 
@@ -47,7 +47,7 @@
 
 - Rust 侧：`cargo build --features flutter`（会编 `flutter_ffi`、`bridge_generated`）
 - Dart 侧：`flutter build windows --release`
-- 打包：两个 exe（`landesk-server.exe` 与 `landesk-client.exe` 都要带 `--features flutter` 才能用同一套会话内核）
+- 打包：`landesk-server.exe` + `master/`（Flutter runner 改名成 `landesk-master.exe`）
 
 ## 3. 工作量与风险（诚实估计）
 
@@ -220,8 +220,8 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 （灰=从未连接、黄=已钉未核对、绿=已核对）；双击连接；右键菜单连接/标记已验证/看指纹/删除。
 
 双击走 `rustDeskWinManager.newRemoteDesktop(addr)`（第 10 节的表格已按实际实现更新）；
-原先“找不到 eframe 壳就退回用自己”的 FFI `open_remote_window` **连同它的回退路径一起删了**——
-但 eframe 的 `landesk-client` crate 本身还在树里（§12 仍会把它打进包里）。
+原先“找不到 eframe 壳就退回用自己”的 FFI `open_remote_window` **连同它的回退路径一起删了**，
+`landesk-client` crate 现在也已整个删除——界面只剩 Flutter。
 
 ## 11. `flutter build windows` 起来了（2026-11 本轮）
 
@@ -250,7 +250,7 @@ Impeller 渲染、右侧面板显示「地址簿 N 台」+ 组/子组树 + 条�
 ```
 cargo build --release --lib --features flutter      → target/release/librustdesk.dll (35MB)
 flutter build windows --release                     → √ 157s, build\...\Release\ 共 75MB
-cargo build --release --bin landesk-server -p rustdesk --bin landesk-client -p landesk-client
+cargo build --release --bin landesk-server -p rustdesk
 bash scripts/dist.sh                                → dist/lanDesk-<日期>.zip (69MB)
 ```
 
@@ -259,10 +259,8 @@ bash scripts/dist.sh                                → dist/lanDesk-<日期>.zi
 ```
 lanDesk-<日期>/
   landesk-server.exe        被控机（Service / 命令行）
-  landesk-client.exe        控制机备用界面（eframe）
   master/
-    landesk-master.exe      正式界面（Flutter runner 改名）
-    landesk-client.exe      双击连接时曾经拉起的那个 eframe 壳（FFI 已不用它了）
+    landesk-master.exe      控制端界面（Flutter runner 改名）
     librustdesk.dll, flutter_windows.dll, data/, *plugin.dll
   使用说明.txt
 ```

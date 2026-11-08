@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 打一个可以拷给别人试用的包：两个 exe + 一页说明。
+# 打一个可以拷给别人试用的包：Service + Flutter 主界面 + 一页说明。
 #
-#   cargo build --release -p landesk-server -p landesk-client
+#   cargo build --release --bin landesk-server -p rustdesk
+#   (cd flutter && flutter build windows --release)
 #   bash scripts/dist.sh
 # 产物：dist/lanDesk-<日期>/ 与 dist/lanDesk-<日期>.zip
 set -eu
@@ -10,9 +11,8 @@ cd "$(dirname "$0")/.."
 
 SRC=target/release
 SERVER=landesk-server.exe
-CLIENT=landesk-client.exe
-if [ ! -f "$SRC/$SERVER" ] || [ ! -f "$SRC/$CLIENT" ]; then
-    echo "先构建：cargo build --release --bin landesk-server -p landesk-client"
+if [ ! -f "$SRC/$SERVER" ]; then
+    echo "先构建：cargo build --release --bin landesk-server -p rustdesk"
     exit 1
 fi
 
@@ -22,18 +22,16 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 cp "$SRC/$SERVER" "$OUT/"
-cp "$SRC/$CLIENT" "$OUT/"
 
-# Flutter 主界面（正式版）：整套 runner 产物放进 master/，并把 exe 改名成 landesk-master.exe。
-# 里面还要放一份 landesk-client.exe——双击连接时它会拉起同目录的这个 eframe 壳。
+# Flutter 主界面（唯一界面）：整套 runner 产物放进 master/，并把 exe 改名成 landesk-master.exe。
 FLUTTER_OUT=flutter/build/windows/x64/runner/Release
 if [ -f "$FLUTTER_OUT/rustdesk.exe" ]; then
     mkdir -p "$OUT/master"
     cp -r "$FLUTTER_OUT/." "$OUT/master/"
     mv "$OUT/master/rustdesk.exe" "$OUT/master/landesk-master.exe"
-    cp "$SRC/$CLIENT" "$OUT/master/"
 else
-    echo "提示：没有 $FLUTTER_OUT —— 先跑 flutter build windows --release，否则包里只有 eframe 界面"
+    echo "缺少 $FLUTTER_OUT —— 先跑 (cd flutter && flutter build windows --release)"
+    exit 1
 fi
 
 cat > "$OUT/使用说明.txt" <<'EOF'
@@ -42,8 +40,7 @@ lanDesk 试用包
 
 两个程序：
   landesk-server.exe  被控机跑它（Service），控制机上也能用它做命令行操作
-  master\landesk-master.exe  控制机的正式界面（Flutter）
-  landesk-client.exe  控制机的备用界面（eframe），也是 master 双击连接时拉起的那个
+  master\landesk-master.exe  控制机的图形界面（Flutter）
 
 一、被控机（要被人远程看到的那台）
   1. 在控制机上先跑一次，生成密钥对并记下打印出的 public key：

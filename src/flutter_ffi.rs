@@ -2379,7 +2379,11 @@ pub fn main_is_installed() -> SyncReturn<bool> {
 
 pub fn main_init_input_source() -> SyncReturn<()> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    crate::keyboard::input_source::init_input_source();
+    {
+        // 默认值先落地（Flutter 直发），再按配置起输入源。
+        crate::landesk::apply_client_defaults();
+        crate::keyboard::input_source::init_input_source();
+    }
     SyncReturn(())
 }
 

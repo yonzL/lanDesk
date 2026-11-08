@@ -47,18 +47,19 @@ lanDesk 是 [RustDesk](https://github.com/rustdesk/rustdesk) 的精简分支：�
 
 ## 构建
 
-仅目标 Windows。完整构建需要 Rust 工具链、`libclang`（`kcp-sys` 用 bindgen）与 vcpkg 的 `opus`/`libvpx`/`aom`/`libyuv`。Flutter 只有想做上游那套界面时才需要；landesk 自己的界面是纯 Rust。
+仅目标 Windows。完整构建需要 Rust 工具链、`libclang`（`kcp-sys` 用 bindgen）、vcpkg 的 `opus`/`libvpx`/`aom`/`libyuv`，以及 **Flutter**（界面就是 Flutter 写的）。
 
 ```bash
 cargo check -p hbb_common --all-targets          # landesk 唯一改动的共享协议库
-cargo build --bin landesk-server -p landesk-client
-cargo test  -p rustdesk --test session_smoke     # 端到端：真的收到一帧画面
+cargo build --bin landesk-server -p rustdesk      # 被控端 + 命令行
+(cd flutter && flutter build windows --debug)     # 控制端界面
+cargo test  -p rustdesk --test session_smoke      # 端到端：真的收到一帧画面
 bash scripts/dist.sh                            # 打一个可拷给别人的包（需先 --release）
 ```
 
-静态 CRT + 静态 vcpkg，所以打包出来就是两个 exe，不依赖 DLL。`landesk-server.exe` 的双击启动会去拉起上游的 sciter 界面，需要 `sciter.dll`——landesk 模式下不要双击它，只用 `--server` / `--landesk-*` 这些参数。
+静态 CRT + 静态 vcpkg，所以打包出来是 `landesk-server.exe` + 一个 `master/` 目录（Flutter 主界面），不依赖系统 DLL。`landesk-server.exe` 的双击启动会去拉起上游的 sciter 界面，需要 `sciter.dll`——landesk 模式下不要双击它，只用 `--server` / `--landesk-*` 这些参数。
 
-CI（`.github/workflows/ci.yml`）：`hbb-common` 作业跑共享协议库的 check 与 `keyauth` 测试；`main-crate` 作业准备 vcpkg/libclang 后跑 `cargo check -p rustdesk --lib` 与 `cargo check -p landesk-client`；打 `v*` tag 时会额外跑 `release` 作业出包并发布。端到端会话测试不在 CI 里跑（需要一个可截屏的桌面会话）。
+CI（`.github/workflows/ci.yml`）：`hbb-common` 作业跑共享协议库的 check 与 `keyauth` 测试；`main-crate` 作业准备 vcpkg/libclang 后跑 `cargo check -p rustdesk --lib` 与 `key_proof` 回归；打 `v*` tag 时会额外跑 `release` 作业出包并发布。端到端会话测试不在 CI 里跑（需要一个可截屏的桌面会话）。
 
 ### Windows 构建工具（比网络更容易踩）
 
@@ -236,17 +237,24 @@ PORT=31218 bash scripts/landesk-smoke.sh   # 本机已有 Service 时换端口
 **图形界面（Master）：**
 
 ```bash
-cargo build -p landesk-client      # 纯 Rust 窗口，不需要 Flutter
-./target/debug/landesk-client.exe
+cd flutter && flutter build windows --debug
+./build/windows/x64/runner/Debug/rustdesk.exe
 ```
 
-左边是地址簿的组/子组树，选中一台后右側显示地址与指纹状态；“连接（申请操作权）”与“只看”两个按钮做的是同一件事——验证对面主机、用本机私钥证明自己——区别只在后者声明自己不发送输入。连上之后窗口里就是远端画面，鼠标、滚轮、可打印字符、Ctrl/Shift/Alt 组合键与 F1–F12 会发过去；顶部有“断开”，对端有多块屏时还能选看哪一块。会话里会自动开启**剪贴板传文件**（在资源管理器复制文件，到远端粘贴就落盘）。会话断开后窗口自动回到可重连的状态，底部日志里能看到原因。多台 Master 可以同时连一台 Service（同一把私钥），同时操作时后写入者生效。
+主窗口右侧是地址簿的组/子组树（状态圆点：灰=从未连接、黄=已钉未核对、绿=已核对），双击一台就开一个会话窗口：里面是远端画面，工具栏提供断开、全屏、画质/帧率/编码器、镭射/键盘/聊天、文件传输、录制。鼠标、滚轮、可打印字符与组合键都发到远端（键盘默认走 Flutter 直发，见下方“输入源”）。多台 Master 可以同时连一台 Service（同一把私钥），同时操作时后写入者生效。
 
-这个窗口默认读写 exe 同目录的 `addressbook.json` 与 `private.key`——和命令行版一致（把两个文件放到 `landesk-client.exe` 旁边即可）；CSV 导入仍然用命令行的 `--landesk-book-import`。
+地址簿与私钥读写 `master/`（即 exe 同目录）下的 `addressbook.json` 与 `private.key`；CSV 导入仍然用命令行的 `--landesk-book-import`。
 
-**文件分发（扇出）：** 窗口顶部切到「文件分发」标签，在左侧地址簿里勾选多台目标，填远端目录和要推的文件（一行一个本机路径），点「开始分发」。每台一个独立的文件会话并行推同一批文件，进度逐台显示；失败会给出原因。同一页面也支持下载与文件操作（删除/改名/新建目录），目前通过 `landesk-server.exe` 的文件会话 API 驱动（界面暂只做了分发）。
+**输入源**：上游有两套键盘发送实现，工具栏里可切。landesk 默认用 `Input source 2`（Flutter 直发：会话窗口获得焦点、且指针在画面上时转发）；上游默认的 `Input source 1` 是一个系统级键盘钩子，会主动忽略注入的按键，在装了安全软件的机器上也未必能装上钩子。
 
-**打包给别人试：** `cargo build --release …` 后跑 `bash scripts/dist.sh`，得到 `dist/lanDesk-<日期>.zip`：里面只有两个 exe 与一页 `使用说明.txt`（静态 CRT + 静态 vcpkg，不依赖 DLL）。
+**文件分发（扇出）：** 用命令行，每台一个独立的文件会话并行推同一批文件，进度逐台打印：
+
+```bash
+landesk-server.exe --landesk-push 10.0.0.5:21118,10.0.0.6:21118 \
+  --landesk-to "C:\landesk-incoming" --landesk-files "D:\build\a.exe,D:\build\b.json" --landesk-key master.key
+```
+
+**打包给别人试：** `cargo build --release --bin landesk-server -p rustdesk` 与 `cd flutter && flutter build windows --release` 之后跑 `bash scripts/dist.sh`，得到 `dist/lanDesk-<日期>.zip`：里面是 `landesk-server.exe`、`master/`（Flutter 主界面）与一页 `使用说明.txt`（静态 CRT + 静态 vcpkg，不依赖系统 DLL）。
 
 ## 许可
 

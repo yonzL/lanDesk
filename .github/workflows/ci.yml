@@ -73,8 +73,6 @@ jobs:
       # 鉴权的 fail-open 回归测试（缺 transcript 必须拒），不跑就等于没堵。
       - name: cargo test -p rustdesk --lib key_proof
         run: cargo test -p rustdesk --lib key_proof
-      - name: cargo check -p landesk-client
-        run: cargo check -p landesk-client
 
 # 说明：Session/文件分发的端到端测试（tests/session_smoke.rs）不在 CI 里跑——
 # 它要起一个 Service 进程并依赖可截屏的桌面会话，在无人的 runner 上不稳定。
@@ -124,10 +122,8 @@ jobs:
             throw "libclang.dll not found at $env:LIBCLANG_PATH"
           }
       - name: cargo build --release
-        run: |
-          cargo build --release --bin landesk-server -p rustdesk
-          cargo build --release -p landesk-client
-      # 出包前先确认两个 exe 真的能跑：一个打印版本，一个生成密钥。
+        run: cargo build --release --bin landesk-server -p rustdesk
+      # 出包前先确认二进制真的能跑：一个打印版本，一个生成密钥。
       - name: smoke the built binaries
         shell: bash
         run: |

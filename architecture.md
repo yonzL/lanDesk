@@ -175,7 +175,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 后台窗口的降级（`landesk::priority`：`BELOW_NORMAL` + 5 fps + 5 Hz 重绘）原本是按进程设的，
 多引擎同进程后需要改按会话设——这是已知待办，不是已实现的能力。
 
-两个已知取舍：wgpu 后端与主 crate 锁定的旧 `windows` crate 撞版本，所以固定走 glow；`eframe` 固定 0.31（0.37 的 `App` trait 与面板 API 已变）。
+- 渲染后端：界面换成 Flutter 后，原先 eframe/egui 的那两个取舍（wgpu 与旧 `windows` crate 撞版本、`eframe` 固定 0.31）都不再适用。
 - 地址簿：`addressbook.json` 在可执行文件同目录（`--landesk-book` 可改），条目为 `组/子组/显示名/地址:端口/身份`，指纹库内嵌在同一份文件里。CSV 不是“整份替换”：导入按 `地址:端口` **覆盖式合并**（同址覆盖、其余保留），且全部行解析成功才落盘；导出写 `组,子组,显示名,地址,身份`，与自己的解析器对称（`#` 开头的值加引号、换行转空格、表头去 BOM）。
 - 私钥：`private.key` 在可执行文件同目录（`--landesk-key` 可改），保护靠文件系统 ACL——与 Veyon 同一路子（它用 `keys/public` 与 `keys/private` 两个目录、每个密钥一个子目录，就为了能分别设权限）。Unix 上 `GlobalKeyPair::save` 直接以 0600 创建文件；Windows 上没有这个模式位，靠目录 ACL。**DPAPI 尚未实现**（这是可选的加固方向，不是当前承诺）。
 

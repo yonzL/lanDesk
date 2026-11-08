@@ -1572,6 +1572,28 @@ pub fn apply_service_defaults() {
     }
 }
 
+/// 控制端默认用 **Flutter 直发**（`Input source 2`）而不是上游默认的 rdev 全局钩子。
+///
+/// 两条路都能用，但 rdev 那条是一个**系统级键盘钩子**，会主动忽略“注入的”按键（防回环），
+/// 所以我们既无法自动验证它，也无法保证它在装了安全软件的机器上一定能装钩子。
+/// Flutter 直发走的是前台窗口 → `sessionInputKey`，可验证、也不需要全局钩子；
+/// 代价是键盘只在会话窗口获得焦点、且指针在画面上时转发（这正是我们要的语义）。
+/// 用户仍然可以在工具栏里改回 `Input source 1`，这里只是改默认值。
+#[cfg(all(feature = "flutter", not(any(target_os = "android", target_os = "ios"))))]
+pub fn apply_client_defaults() {
+    use crate::keyboard::input_source::{
+        CONFIG_INPUT_SOURCE_2, CONFIG_OPTION_INPUT_SOURCE,
+    };
+    let current = crate::ui_interface::get_local_option(CONFIG_OPTION_INPUT_SOURCE.to_owned());
+    if current.is_empty() {
+        crate::ui_interface::set_local_option(
+            CONFIG_OPTION_INPUT_SOURCE.to_owned(),
+            CONFIG_INPUT_SOURCE_2.to_owned(),
+        );
+        log::info!("landesk: input source defaults to the flutter path (no global keyboard hook)");
+    }
+}
+
 /// landesk 模式下是否必须完成密钥证明才能继续。
 ///
 /// 与 `takes_over_network` 的区别很重要：后者要求**有监听端口**，而这里只要求"这台机器按 landesk

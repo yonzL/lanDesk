@@ -68,8 +68,7 @@ Clipboard message from client peer, but not authorized
 
 ## 3c. 日志位置（别再找错）
 
-- 客户端（release）：`%APPDATA%\RustDesk\log\client\landesk-client_rCURRENT.log`
-  —— 因为 GUI 在 `init_log` 之后才把 `APP_NAME` 改成 `lanDesk`，所以日志跟着旧名走。
+- 客户端（Flutter 界面）：`%APPDATA%\lanDesk\log\` 下的 `*_rCURRENT.log`
 - 服务端（SYSTEM 服务）：`C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\lanDesk\log\server\`
 - CM（用户令牌）：`%APPDATA%\lanDesk\log\landesk-cm\`
 
