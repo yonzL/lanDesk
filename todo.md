@@ -21,7 +21,7 @@
 | 1 | 会话窗口的**键盘注入** | 远端记事本里打字 → SSH 读文件内容对得上 | 已改默认输入源为 Flutter 直发；需人工按键确认一次 |
 | 2 | **文本 / 文件剪贴板 + 音频**在 Flutter 窗口里 | 两台机器实测：本地复制 → 远端 `Get-Clipboard`；文件复制粘贴；声音 | 未验证（eframe 里都验过） |
 | 3 | 修 **失焦后画面停更** | 会话窗口被盖住再切回来，远端新开的窗口要出现 | 已排除：按变化推流，测试期间的“停更”都是远端没变 |
-| 4 | **删掉 `landesk-client` crate** + 重打包 | 包里只剩 `landesk-server.exe` + `master/`（Flutter），CI/文档同步 | crate 已删；待实测后出最终包 |
+| 4 | **删掉 `landesk-client` crate** + 重打包 | 包里只剩 `landesk-server.exe` + `master/`（Flutter），CI/文档同步 | **已完成**：crate 已删，`dist/lanDesk-20261109.zip`（47MB，比之前小 22MB）只有 server + master/ |
 
 ### 阶段 3 — 试用轮（下一阶段）
 
@@ -47,7 +47,7 @@
 - [ ] **Flutter 会话窗口的剪贴板与音频实测**：eframe 里文本/文件剪贴板与音频都过了真机；Flutter 走的是上游 `FlutterHandler`，客户端剪贴板监听在非 Flutter UI 里曾零事件。验收方式：本地复制 → SSH 到对端 `Get-Clipboard` 比对；文件复制粘贴看落盘；音频看客户端日志 `Audio playback stream opened` + 人耳确认。
 - [x] **失焦后画面停更（结论：不是 bug）**：原先三次“停更”都有其他解释——本机自测是镜像自己、远端显示器休眠导致黑帧、SSH 启的 GUI 根本不在交互桌面上（session 0），所以远端屏幕确实没变。上游按变化推流，静止就没有新帧。要真证伪需要一台能人为改屏的远端。
 - [x] **删除 `landesk-client` crate**：整个 crate 删除；`Cargo.toml` 成员、CI 的 check 与 release 构建、`scripts/dist.sh` 的拷贝与说明、`README` / `architecture.md` / `docs/flutter-path.md` / `docs/file-clipboard-chain.md` 全部同步。`--landesk-push` 仍可用（走库里的 `session::distribute`，与界面无关）。
-- [ ] **重打包**：等剪贴板/音频实测过再出最终包。
+- [x] **重打包**：`dist/lanDesk-20261109.zip`（47MB）：`landesk-server.exe` + `master/`（`landesk-master.exe` + 13 个 DLL + `data/`）+ 使用说明；说明里已经不再提 eframe。包里的 `master/landesk-master.exe` 启动后进程正常、窗口标题 `lanDesk`（本机当时已锁屏，交互验证待做）。
 
 ### 阶段 3（试用轮）
 
