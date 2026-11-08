@@ -44,18 +44,12 @@ pub(crate) fn register_target(peer: &str, target: Target) {
     targets().lock().unwrap().insert(peer.to_owned(), target);
 }
 
-/// 给即将开始的一次直连登记目标（显式指定地址簿/密钥的调用方用：CLI 的
-/// `--landesk-book`/`--landesk-key`、`--landesk-push`与冒烟脚本）。
-pub(crate) fn register_connection(peer: &str, book: PathBuf, key: PathBuf, control: bool) {
-    register_target(peer, Target { book, key, control });
-}
-
 /// 这次直连用哪份地址簿、哪把私钥：**没有显式登记时**才自己解析。
 ///
-/// 显式登记（CLI 的 `--landesk-book`/`--landesk-key`、`--landesk-push`、冒烟脚本）优先；
-/// 否则像 SubnetDesk 的 `Client::start` 那样：`peer` 就是 `host:port`，身份取地址簿里该地址钉的那把，
-/// 没有就用默认私钥。于是 Flutter 的会话窗口（上游 `session_add`/`session_start` 驱动、独立进程）
-/// 不需要任何预备调用。
+/// 显式登记（`landesk::session::build_session`，也就是 CLI 给了 `--landesk-book`/`--landesk-key`
+/// 或 `--landesk-push`、冒烟脚本这些临时路径的场景）优先；否则像 SubnetDesk 的 `Client::start`
+/// 那样：`peer` 就是 `host:port`，身份取地址簿里该地址钉的那把，没有就用默认私钥。
+/// 于是 Flutter 的会话窗口（上游 `session_add`/`session_start` 驱动）不需要任何预备调用。
 pub(crate) fn default_inputs(peer: &str) -> ResultType<(PathBuf, PathBuf)> {
     let config = crate::landesk::config();
     let book = config
@@ -64,16 +58,30 @@ pub(crate) fn default_inputs(peer: &str) -> ResultType<(PathBuf, PathBuf)> {
         .unwrap_or_else(|| crate::landesk::exe_dir().join("addressbook.json"));
     let key_from_book = crate::addressbook::AddressBook::load(&book)
         .ok()
-        .and_then(|book| book.get(peer).and_then(|entry| entry.key.clone()))
-        .and_then(|name| crate::landesk::resolve_identity(&name));
-    let key = key_from_book
-        .or_else(crate::landesk::default_identity)
-        .ok_or_else(|| {
-            hbb_common::anyhow::anyhow!(
-                "landesk: no client identity (import or generate a private key first)"
-            )
-        })?;
+        .and_then(|book| book.get(peer).and_then(|entry| entry.key.clone()));
+    let key = choose_key(
+        key_from_book.as_deref(),
+        crate::landesk::resolve_identity,
+        crate::landesk::default_identity,
+    )
+    .ok_or_else(|| {
+        hbb_common::anyhow::anyhow!(
+            "landesk: no client identity (import or generate a private key first)"
+        )
+    })?;
     Ok((book, key))
+}
+
+/// 挑一把私钥：地址簿里该地址钉的身份优先，解析不出来（身份被删/改名）就用默认身份。
+///
+/// 拆出来是为了能测——`resolve_identity` 与 `default_identity` 都是全局目录查找，
+/// 而这里的分支正是会话窗口唯一走的那条（没有别的测试会踩到）。
+fn choose_key(
+    entry_key: Option<&str>,
+    resolve_named: impl Fn(&str) -> Option<PathBuf>,
+    default_identity: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    entry_key.and_then(resolve_named).or_else(default_identity)
 }
 
 /// 取走并移除：一次连接只用一次。
@@ -926,4 +934,47 @@ pub fn distribute(
         });
     }
     Distribution { reports, finished }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(name: &str) -> PathBuf {
+        PathBuf::from(name)
+    }
+
+    /// 地址簿里钉了身份且能解析：用它，不动默认身份。
+    #[test]
+    fn a_pinned_identity_wins_over_the_default() {
+        let picked = choose_key(
+            Some("master-191"),
+            |name| (name == "master-191").then(|| path("/identities/master-191.key")),
+            || Some(path("/private.key")),
+        );
+        assert_eq!(picked, Some(path("/identities/master-191.key")));
+    }
+
+    /// 钉的身份被删了/改名了：退回默认身份，而不是直接连不上。
+    #[test]
+    fn an_unresolvable_pinned_identity_falls_back_to_the_default() {
+        let picked = choose_key(Some("gone"), |_| None, || Some(path("/private.key")));
+        assert_eq!(picked, Some(path("/private.key")));
+    }
+
+    /// 地址簿里这台没钉身份（或根本没有地址簿条目）：用默认身份。
+    #[test]
+    fn no_pinned_identity_uses_the_default() {
+        assert_eq!(
+            choose_key(None, |_| Some(path("/nope")), || Some(path("/private.key"))),
+            Some(path("/private.key"))
+        );
+    }
+
+    /// 两者都没有：返回 None，由 `default_inputs` 换成一条可读的错误。
+    #[test]
+    fn nothing_available_is_none() {
+        assert_eq!(choose_key(None, |_| None, || None), None);
+        assert_eq!(choose_key(Some("gone"), |_| None, || None), None);
+    }
 }

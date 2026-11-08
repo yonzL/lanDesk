@@ -3,8 +3,8 @@
 //! 全部放在**默认构建**里：既能被 `cargo check`/测试覆盖，也让 `flutter_ffi.rs` 只留一层薄封装。
 //! 返回字符串的约定统一为：成功 = JSON（或空串），失败 = 以 `error:` 开头的可读原因。
 //!
-//! 会话本身走**上游的 Flutter 会话链路**：界面在会话窗口里先调 [`prepare_session`] 把目标登记到
-//! 本进程，再交给上游的 `sessionStart` 拨号（`client::_start` 会取走这份目标）。
+//! 会话本身走**上游的 Flutter 会话链路**：窗口里的 `RemotePage` 直接 `start()`，Rust 侧的
+//! 拨号器（`client::_start`）从地址簿与默认身份自己解析身份并走 keyauth——界面不需要任何预备调用。
 
 use base::config::keys;
 use serde_derive::Serialize;

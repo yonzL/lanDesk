@@ -106,8 +106,8 @@ class _LandeskAddressBookPageState extends State<LandeskAddressBookPage> {
   }
 
   Future<void> _open(_Entry entry) async {
-    // 走上游原本的多窗口路径：新窗口是一个独立进程，窗口里的 RemotePage 在 start 前会先把
-    // 这个地址登记给 Rust 的拨号器（见 remote_page.dart 的 _startLandesk）。
+    // 走上游原本的多窗口链路：新窗口是同一个进程里的第二个 Flutter 引擎，窗口里的 RemotePage
+    // 直接 `start()`；身份由 Rust 侧的 `client::_start` 从地址簿解析，不需要提前登记。
     try {
       await rustDeskWinManager.newRemoteDesktop(entry.addr);
     } catch (err) {

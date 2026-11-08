@@ -119,38 +119,40 @@ README 提到 DRM 包因为"根服务要适配新的 user-session runtime"而暂
 ### 3.2 我们（1.5.1 形状 + landesk 前置层）
 
 窗口链路与它逐行相同（`connect` → `newRemoteDesktop` → `createWindow` → `FFI.start`），
-差别在 `Client::_start`：上游 1.5.1 的 `_start` 是「rendezvous → 直连 IP → relay」三段式，
-我们把 landesk 直连插在最前面，条件是**本进程登记过这个 peer**：
+差别全在 `Client::_start`：上游 1.5.1 的 `_start` 是「rendezvous → 直连 IP → relay」三段式，
+我们把 landesk 直连插在最前面，**两条分支都走同一个 `connect_authenticated`**：
 
 ```rust
-if let Some(target) = crate::landesk::session::take_target(peer) {   // 注册表
+// ① 调用方登记过目标（landesk::session::start / 冒烟脚本的临时地址簿与密钥）
+if let Some(target) = crate::landesk::session::take_target(peer) {
     connect_authenticated(peer, &target.book, &target.key, target.control).await?
-} else if crate::landesk::is_landesk() {
-    bail!("landesk: {peer} is not a registered target …")            // 其余分支一律不走
+}
+// ② 没登记：像 SubnetDesk 的 Client::start 那样自己解析
+if crate::landesk::is_landesk() {
+    let (book, key) = crate::landesk::session::default_inputs(peer)?;   // 地址簿里该地址的身份，否则默认私钥
+    connect_authenticated(peer, &book, &key, true).await?
 }
 ```
 
-这层注册表是给 eframe 壳（`landesk::session::start` 自己构造 `Session<LandeskUi>`）准备的：
-`book` / `key` / `control` 由调用方带着走。代价是**同一进程里必须先注册**——这正是
-Flutter 会话窗口（独立进程，由上游 `session_add`/`session_start` 驱动）撞上的墙。
+两层都在的理由：① 给 CLI 用 `--landesk-book` / `--landesk-key` 指向临时文件的场景（冒烟脚本、
+`--landesk-push`）保留自带路径的能力；② 让 Flutter 会话窗口——上游 `session_add`/`session_start`
+驱动的一个新 Flutter 引擎（与主窗口**同一进程**，不是新进程）——不需要任何预备调用。
 
-### 3.3 该收敛成 SubnetDesk 那样
+早先只有 ①，而 eframe 壳（`landesk::session::start` 自己构造 `Session<LandeskUi>`）正好需要它；
+Flutter 窗口走进来时才发现它没有那个调用点，于是加上了 ②。
 
-eframe 壳本轮删掉之后，注册表就没有「进程内另一个入口」这个用途了。收敛方向：
+### 3.3 与 SubnetDesk 的差别清单（已按 ② 收敛）
 
-- `client::_start` 在 landesk 模式下**自己去解析**（地址簿里该地址钉的身份，否则默认私钥；
-  `control` 默认 true，将来由界面传），即 `connection_inputs(peer)`；
-- 已登记的目标仍然优先（CLI 用 `--landesk-book` / `--landesk-key` 指向临时文件的场景，
-  以及 `--landesk-push` / 冒烟脚本），只是**不再要求**先登记；
-- 于是 Flutter 会话窗口的 `session_start` 不需要任何预备调用，链路回到上游原样。
+收敛已完成：Flutter 会话窗口的 `session_start` 不需要任何预备调用，链路回到上游原样。
+剩下的差别都是**有意保留**的：
 
 差别清单（供后续比对）：
 
 | 关注点 | SubnetDesk | 我们 |
 |---|---|---|
 | peer id 形态 | `hbb_common::lan::Endpoint`（共享类型，含校验） | `host:port` 字符串，解析分散在几处 |
-| 拨号入口 | `Client::start` 即 LAN 拨号器（无注册表） | `_start` 里查注册表，再走 `transport::connect_authenticated` |
+| 拨号入口 | `Client::start` 即 LAN 拨号器（无注册表） | `_start` 里先看登记（CLI 临时路径），否则自己解析 |
 | 身份来源 | 用户/密码 + 可记住的凭据（`lan_access_username`） | 全局密钥对（双向签名），服务端绑公钥集合 |
 | 主机身份 | `lan_protocol::client_handshake` 验设备公钥 + TOFU | `AuthNonce.host_pk + host_proof` + `PinnedHosts` TOFU |
-| 会话窗口接线 | 无（上游原样） | 本轮将改为无（收敛后） |
+| 会话窗口接线 | 无（上游原样） | **也无**（已收敛，`FFI.start` 前无任何预备调用） |
 | 候选/重试 | `connection_candidates` + mDNS 发现回退 | 单地址，不重试候选 |

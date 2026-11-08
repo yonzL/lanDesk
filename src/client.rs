@@ -457,9 +457,9 @@ impl Client {
                 false,
             ));
         }
-        // landesk：没有登记也要能连——Flutter 的会话窗口是上游 `session_add`/`session_start`
-        // 驱动的新进程，它不会（也不应该）先登记。这里像 SubnetDesk 的 `Client::start` 那样，
-        // 直接把 `peer` 当 `host:port`，从地址簿与默认身份自己解析。
+        // landesk：没登记时也自己解析——Flutter 的会话窗口是上游 `session_add`/`session_start`
+        // 驱动的一个新 Flutter 引擎（与主窗口同一进程），它不会也不需要先登记。这里像 SubnetDesk 的
+        // `Client::start` 那样，直接把 `peer` 当 `host:port`，从地址簿与默认身份自己解析。
         if crate::landesk::is_landesk() {
             let (book, key) = crate::landesk::session::default_inputs(peer)?;
             log::info!("landesk: using the authenticated path for {peer}");

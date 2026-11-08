@@ -173,13 +173,14 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_D
 | `book_remove(addr)` / `book_verify(addr)` | 同上；删除会连指纹一起丢掉 |
 | `identity_list()` | 可用身份 JSON 数组：`{name, path, public}` |
 | `listen_status()` | `landesk-status.json` 的内容（没有则 `null`） |
-| `open_remote_window(addr)` | 起一个 `--landesk-remote <addr>` 子进程；一个会话一个进程 |
 
-**会话不在界面进程里开**，所以 Flutter 不需要接 `sessions` 注册表——它只需要调 `open_remote_window`，
-和现在 eframe 的做法完全一致（这也是"每会话一个进程"决定的直接好处）。
+**会话不在界面进程里另开进程**：Flutter 会话窗口是 `desktop_multi_window` 在主窗口进程里建的
+**第二个 Flutter 引擎**（`rustdesk_desktop_multi_window/windows/flutter_window.cc` 里的
+`set_dart_entrypoint_arguments("multi_window", id, args)`，没有 `CreateProcess`）。
+窗口里的 `RemotePage` 直接调上游的 `FFI.start()`，Rust 侧的 `client::_start` 自己从地址簿解析身份并
+走 keyauth——不需要任何预备调用，这一点与 SubnetDesk 一致。
 
-剩下的 Dart 侧工作只剩页面：用 `book_list` 替换 `my_group.dart` / `address_book.dart` 的列表，
-双击调 `open_remote_window`，设置页加一个"身份"区块（`identity_list` / import / forget）。
+剩下的 Dart 侧工作只剩设置页：加一个"身份"区块（`identity_list` / import / forget）。
 
 ## 10. 陷阱：`pub get` 会改写两个文件
 
@@ -229,7 +230,6 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 | `bind.landeskBookUpsert(group,subgroup,name,addr,key)` | `book_upsert` | 按 `地址:端口` 覆盖 |
 | `bind.landeskBookRemove(addr)` | `book_remove` | 连带丢掉指纹 |
 | `bind.landeskBookVerify(addr)` | `book_verify` | 操作者核对指纹后标记 |
-| `bind.landeskOpenRemoteWindow(addr)` | `open_remote_window` | 起独立进程开会话窗口 |
 | `bind.landeskIdentityList()` / `landeskListenStatus()` | 同名 | 身份列表 / 监听状态 |
 
 接线方式（全部是薄改）：
@@ -243,10 +243,8 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 页面行为：2 秒轮询文件（CLI 改完立刻可见）；组/子组两级展开；状态用圆点而非字形
 （灰=从未连接、黄=已钉未核对、绿=已核对）；双击连接；右键菜单连接/标记已验证/看指纹/删除。
 
-**未接的部分（明确记录）**：Flutter 自己的远程会话窗口要复用上游的多窗口链路
-（`desktop_multi_window` + `runMultiWindow`），还没做。所以 `open_remote_window` 现在优先拉起
-同目录的 `landesk-client.exe`（eframe 壳，`dist.sh` 两个 exe 一起发布），找不到才退回用自己
-——双击过去是一个**真能用的**会话窗口，而不是坏按钮。
+双击走 `rustDeskWinManager.newRemoteDesktop(addr)`（文档 §12 的表格已按实际实现更新）；
+原先“找不到 eframe 壳就退回用自己”的 `open_remote_window` 已随 eframe 一起删除。
 
 ## 13. `flutter build windows` 起来了（2026-11 本轮）
 
