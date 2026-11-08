@@ -220,7 +220,8 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 （灰=从未连接、黄=已钉未核对、绿=已核对）；双击连接；右键菜单连接/标记已验证/看指纹/删除。
 
 双击走 `rustDeskWinManager.newRemoteDesktop(addr)`（第 10 节的表格已按实际实现更新）；
-原先“找不到 eframe 壳就退回用自己”的 `open_remote_window` 已随 eframe 一起删除。
+原先“找不到 eframe 壳就退回用自己”的 FFI `open_remote_window` **连同它的回退路径一起删了**——
+但 eframe 的 `landesk-client` crate 本身还在树里（§12 仍会把它打进包里）。
 
 ## 11. `flutter build windows` 起来了（2026-11 本轮）
 
@@ -261,7 +262,7 @@ lanDesk-<日期>/
   landesk-client.exe        控制机备用界面（eframe）
   master/
     landesk-master.exe      正式界面（Flutter runner 改名）
-    landesk-client.exe      双击连接时拉起的那个 eframe 壳
+    landesk-client.exe      双击连接时曾经拉起的那个 eframe 壳（FFI 已不用它了）
     librustdesk.dll, flutter_windows.dll, data/, *plugin.dll
   使用说明.txt
 ```

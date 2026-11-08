@@ -115,12 +115,12 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 - `client.rs` + `client/`（io_loop、文件、截图）、`server.rs` + `server/`（video / input / clipboard / display / connection）——会话两侧的本体。
 - `ipc/`、`service.rs`、`platform/windows`——Windows 服务与活动会话进程之间的桥，含 SYSTEM 桌面访问。
 - `libs/scrap`、`libs/enigo`、`libs/clipboard`、`libs/hbb_common`——采集、注入、剪贴板、协议与密码学原语。
-- `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——上游的 Master 界面。**正式版的界面方向就是它**（先决条件已在 `docs/flutter-path.md` 中实测打通）；当前仍由 eframe 的 `landesk-client` 交付，见下方“Master 界面”。
+- `flutter/` + `flutter_ffi.rs` + `ui_interface.rs`——上游的 Master 界面，也就是当前交付的界面（先决条件在 `docs/flutter-path.md` 中实测打通，双击连接已走它）；见下方“Master 界面”。
 
 移除（**已落地**，2026-11）：
 
 - `rendezvous_mediator.rs`（1844 行）、`hbbs_http/`（1844 行，其中有 114 行的通用 HTTP 客户端搬到 `src/http_client.rs` 保留）、`updater.rs` + `updater/` + `manual_update.rs`（1382 行：636 + 536 + 210）——ID 注册、打洞、中继、服务器 API、自动更新，全部已从树中删除。
-- 客户端的直连 IP / 域名 / rendezvous 回退路径：`Client::start` 现在只接受会话层登记过的目标，其余直接报错。
+- 客户端的直连 IP / 域名 / rendezvous 回退路径：`Client::_start` 在 landesk 构建里只走已认证的直连（地址簿里的 `地址:端口` + keyauth），不再有 rendezvous / relay / “按 ID 直连”那些分支。
 - 启动时的 `api.rustdesk.com` 版本检查（`check_software_update` 及响应解析）。
 - flutter-only 的云钩子也一并删了：`flutter_ffi.rs` 的下载器/更新 FFI 与 `ui_interface.rs` 的 OIDC 登录（`account_auth*`）。`--features flutter` 现在不会再引用已删模块。
 
@@ -165,7 +165,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
   `desktop_multi_window` 在**本进程**里建第二个 Flutter 引擎（`flutter_window.cc` 里改 entrypoint
   参数，没有 `CreateProcess`），窗口里的 `RemotePage` 直接 `FFI.start()`，Rust 侧的
   `client::_start` 自己从地址簿解析身份并走 keyauth——所以窗口不需要任何预备调用。
-* 原 `eframe` 壳（`landesk-client` crate）本轮已删，只作为本轮之前的历史存在。
+* 原 `eframe` 壳（`landesk-client` crate，egui/glow）**已不在双击链路上**：地址簿与连接都由 Flutter 主界面完成。crate 本身还在树里（仍是 workspace 成员、仍被 CI 与 `dist.sh` 带上），作为无界面 CLI 与排障手段保留；彻底移除是待办，不是已完成的事实。
 
 界面与后端的分工是稳定的：landesk 已经把界面需要的东西集中暴露在 `src/landesk/ffi.rs`（`book_list` / `book_upsert` / `book_remove` / `book_verify` / `identity_list` / `listen_status`），`flutter_ffi.rs` 只有一层同名薄封装（`landesk_` 前缀）加一个编译期标志 `landesk_build()`。**换 UI 不动后端。**
 
@@ -184,7 +184,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 
 ## 不变量
 
-- **无出站**：Service 除应答外不发起任何连接。已经**从代码上**落实：`rendezvous_mediator`、`hbbs_http`、`updater` 与启动时的版本检查都已删除；客户端也只连会话层登记过的目标（其余直接报错）。冒烟脚本里仍有“无出站”的断言作为第二道防线。
+- **无出站**：Service 除应答外不发起任何连接。已经**从代码上**落实：`rendezvous_mediator`、`hbbs_http`、`updater` 与启动时的版本检查都已删除；客户端的拨号也只有一条路——`Client::_start` 把 peer 当 `地址:端口`，先从登记过的目标取身份（CLI 指定临时地址簿/密钥时），否则从地址簿与默认身份自己解析，然后直接 keyauth 握手。冒烟脚本里仍有“无出站”的断言作为第二道防线。
 - **证明先于会话**：`AuthProof` 验证通过之前，Service 不接受任何会话消息；拒绝日志恰好一行。
 - **私钥不出 Master**：不写日志、不进 CSV、不出现在任何网络报文中。
 - **并发不仲裁**：与上游一致，多个已认证连接都能操作，后写入者生效；“只看”是连接时的声明，服务端只记日志。

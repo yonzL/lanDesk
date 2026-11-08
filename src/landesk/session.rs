@@ -167,7 +167,8 @@ impl InvokeUiSession for LandeskUi {
     }
     #[cfg(feature = "flutter")]
     fn is_multi_ui_session(&self) -> bool {
-        // 一个进程只开一个会话窗口（会话多开是“每会话一个进程”），所以不存在多 UI 共用。
+        // 这个壳（`Session<LandeskUi>`，eframe/CLI 路径）只给一个界面用，没有两个 UI 共用一个会话的情况。
+        // Flutter 的多窗口走的是上游 `Session<FlutterHandler>`，与本实现无关。
         false
     }
     fn close_success(&self) {}
@@ -417,6 +418,10 @@ impl SessionHandle {
     ///
     /// 一个 Master 可能同时开十几个窗口，后台窗口不该和前台争 CPU。恢复时把帧率交还给
     /// `foreground_fps`（界面当前的帧率上限），上游的自适应 `fps_control` 会从那里自己爬回去。
+    ///
+    /// **注意**：优先级那一步是**进程级**的（`SetPriorityClass(GetCurrentProcess())`）。在 eframe 壳
+    /// 里一个会话一个进程，所以恰好等价；Flutter 的会话窗口与主窗口同进程，在那里调这个会把
+    /// 主窗口一起降级——详见 `landesk::priority` 的模块注释。
     pub fn set_background(&self, background: bool, foreground_fps: i32) {
         crate::landesk::priority::set_background(background);
         let fps = if background {
