@@ -522,7 +522,8 @@ mod csv_robustness_tests {
 
     #[test]
     fn a_group_starting_with_a_hash_survives_a_round_trip() {
-        // `#` 开头的行会被解析器当注释跳过，所以导出时必须给它加引号。
+        // `#` 开头也是数据，不是注释行：Excel/LibreOffice 保存时会把
+        // `"#1车间"` 的引号去掉，如果解析器把 `#` 行当注释跳过，这台机器就静默消失了。
         let mut book = AddressBook::default();
         book.upsert(entry("#1车间", "工位-02"));
         let csv = book.to_csv();

@@ -160,7 +160,7 @@ Service 以 SYSTEM 身份作为 Windows 服务运行，沿用 RustDesk 既有的
 **一个壳（Flutter），一套后端。**
 
 * 主界面是上游 `flutter/`，主窗口读本机地址簿（`flutter/lib/landesk/address_book_page.dart` →
-  `bind.landeskBookList()` 等，接线见 `docs/flutter-path.md` 第 12 节）。
+  `bind.landeskBookList()` 等，接线见 `docs/flutter-path.md` 第 10 节）。
 * 双击一台机器走上游的多窗口链路（`rustDeskWinManager.newRemoteDesktop(addr)`）：
   `desktop_multi_window` 在**本进程**里建第二个 Flutter 引擎（`flutter_window.cc` 里改 entrypoint
   参数，没有 `CreateProcess`），窗口里的 `RemotePage` 直接 `FFI.start()`，Rust 侧的

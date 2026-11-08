@@ -63,34 +63,10 @@
 
 ## 4. 本次验证记录
 
-- 安装 codegen、解包 SDK 的实际结果：见第 6 节。
+- 安装 codegen、解包 SDK 的实际结果：见第 5 节（结论：已打通；先前的“ffigen 卡住”不是 ffigen 本身，而是 pub 包源的问题）。
 
 
-## 6. 实测结论（本机，2026-11）
-
-| 步骤 | 结果 |
-|---|---|
-| `cargo install flutter_rust_bridge_codegen --version 1.80.1 --locked` | ✅ 72 秒装好（USTC 镜像）；AGENTS.md 里"版本难配"的结论在我们这套环境不成立 |
-| 解包 Flutter SDK | ✅ `D:\dev_ai\_tools\_flutter_extract\flutter`；`flutter --version` → **Flutter 3.47.9 / Dart 3.13.7** |
-| codegen 解析 `src/flutter_ffi.rs` | ✅ 生成 `src/bridge_generated.rs` + `.io.rs` |
-| codegen 的 **ffigen** 步骤 | ❌ 失败且无输出（需要 Dart 侧的 ffigen 包，pub 访问在本机不通） |
-
-所以 `--features flutter` 现在剩下的闸门是 **ffigen**（Dart 侧 C 头生成），与我们的源码无关。
-
-把守方式（不依赖 codegen）：默认构建 `cargo check`、`session_smoke` 五个测试、冒烟四条路径；flutter-only 文件的语法用
-`rustfmt --edition 2021 --check src/flutter_ffi.rs src/ui_interface.rs` 检查（它会解析文件，语法坏块会报错）。
-
-做 Flutter 时的下一步：
-
-1. 配 `PUB_HOSTED_URL=https://pub.flutter-io.cn` 或可用代理，让 ffigen 能 `dart pub get`；
-2. 重跑 `flutter_rust_bridge_codegen`，确认生成物完整（"DUMMY CODE FOR BINDGEN" 块必须是注释）；
-3. 再谈第 2 节的 FFI 面与地址簿页替换。
-
-另外：这一轮清掉了一个隐形隐患——`flutter_ffi.rs` / `ui_interface.rs` 里**只在 `--features flutter` 下编译**的代码，
-长期带着指向已删模块的引用（`hbbs_http::account`、`hbbs_http::downloader`），默认构建永远看不见。
-这些云钩子现在已删，`--features flutter` 不会再报 E0433。
-
-## 7. 更新：先决条件已打通（本机实测）
+## 5. 先决条件已打通（本机实测）
 
 之前的"ffigen 卡住"已解决，原因不是 ffigen 本身，而是 **pub 的包源**：
 
@@ -120,7 +96,7 @@
 | Developer Mode | ✅ 已开启；`flutter build windows` 已经越过这一步 |
 | **VS “使用 C++ 的桌面开发” 工作负载** | ❌ 缺这个：`vcvars64.bat` 与 CMake 都没有，因此 `flutter build windows` 报 `Unable to find suitable Visual Studio toolchain`，Rust 侧的 C 依赖（`kcp-sys`/`ring`/`scrap`）也编不了 |
 
-## 8. 推进：改到最新 Flutter（3.47.9）
+## 6. 推进：改到最新 Flutter（3.47.9）
 
 决定：不在 3.24 上停留，直接把 Dart 侧改到最新 SDK。
 
@@ -161,7 +137,7 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_D
 （同一次构建还会刷一堆 `file_picker` 的 "references file_picker:windows as the default plugin"
 告警——那是它新版联邦插件布局的自引用提示，属噪音，与失败无关。）
 
-## 9. FFI 面已就位（阶段 B 的后端部分）
+## 7. FFI 面已就位（阶段 B 的后端部分）
 
 界面需要的东西集中在 `src/landesk/ffi.rs`（**默认构建**里，可被 `cargo check`/测试覆盖），
 `flutter_ffi.rs` 只有同名薄封装：
@@ -182,7 +158,7 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_D
 
 剩下的 Dart 侧工作只剩设置页：加一个"身份"区块（`identity_list` / import / forget）。
 
-## 10. 陷阱：`pub get` 会改写两个文件
+## 8. 陷阱：`pub get` 会改写两个文件
 
 跟上面这些步骤跑一遍后，`flutter/` 里会有两个**本机工具链产生**的改动，不要当成分支决定提交：
 
@@ -191,7 +167,7 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_D
 
 上一轮就是它们混进了文档提交，`e67e96a` 把它们回滚掉的。跑完 `pub get` 后先 `git checkout` 这两个文件。
 
-## 11. 本机的构建入口（cc-rs / CMake 都要 MSVC 环境）
+## 9. 本机的构建入口（cc-rs / CMake 都要 MSVC 环境）
 
 两个环境事实决定了怎么跑构建，写成一个脚本最省事（脚本本身不入库，属于个人环境）：
 
@@ -220,7 +196,7 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
    vcvars 会把 MSVC 的 `bin\Hostx64\x64` 放进 PATH 前面，正好解决。
 3. 构建缓存会记住旧的错误结果：改了 `VCPKG_ROOT` 后要先 `cargo clean -p magnum-opus -p scrap`。
 
-## 12. Flutter 主界面已接上地址簿（2026-11 本轮）
+## 10. Flutter 主界面已接上地址簿（2026-11 本轮）
 
 新增 `flutter/lib/landesk/address_book_page.dart`（**入库**，不是生成物），数据全部来自 Rust：
 
@@ -243,10 +219,10 @@ cmd //c "C:\...\cargo-msvc.bat test -p rustdesk --lib"
 页面行为：2 秒轮询文件（CLI 改完立刻可见）；组/子组两级展开；状态用圆点而非字形
 （灰=从未连接、黄=已钉未核对、绿=已核对）；双击连接；右键菜单连接/标记已验证/看指纹/删除。
 
-双击走 `rustDeskWinManager.newRemoteDesktop(addr)`（文档 §12 的表格已按实际实现更新）；
+双击走 `rustDeskWinManager.newRemoteDesktop(addr)`（第 10 节的表格已按实际实现更新）；
 原先“找不到 eframe 壳就退回用自己”的 `open_remote_window` 已随 eframe 一起删除。
 
-## 13. `flutter build windows` 起来了（2026-11 本轮）
+## 11. `flutter build windows` 起来了（2026-11 本轮）
 
 ```
 flutter build windows --debug
@@ -268,7 +244,7 @@ Impeller 渲染、右侧面板显示「地址簿 N 台」+ 组/子组树 + 条�
 **这版还会看到的上游残留**（下一步清理）：左侧「你的桌面 / ID / 一次性密码」卡片与「输入对方 ID → 连接」输入框
 ——lanDesk 没有 ID、没有 rendezvous，那个框点了必然失败；以及「由 RustDesk 提供支持」的署名。
 
-## 14. 发布版与整包实测（本轮收尾）
+## 12. 发布版与整包实测（本轮收尾）
 
 ```
 cargo build --release --lib --features flutter      → target/release/librustdesk.dll (35MB)
