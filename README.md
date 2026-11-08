@@ -11,7 +11,7 @@
 |---|---|
 | [`goal-and-requirements.md`](goal-and-requirements.md) | 产品目标、能力清单、非目标、与 RustDesk / SubnetDesk / Veyon 的差别 |
 | [`architecture.md`](architecture.md) | 直连传输、双挑战身份与 TOFU 指纹、并发模型、会话接线、RustDesk 模块取舍、已知边界 |
-| [`todo.md`](todo.md) | 已完成 / 未完成的工作清单（工作追踪，不是规格） |
+| [`todo.md`](todo.md) | 路线图（四个阶段与各自的验收方式）+ 已完成/未完成明细、已知边界（工作追踪，不是规格） |
 
 前两份是 durable spec，都是活的：能力变了、边界动了，就在同一次改动里更新它们。`todo.md` 只回答“做到哪了、还差什么”。
 
