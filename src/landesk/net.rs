@@ -53,18 +53,12 @@ pub fn allowed(ip: IpAddr, nets: &[IpNet]) -> bool {
     nets.iter().any(|net| net.contains(&ip))
 }
 
-/// 配置里的原始字符串（`landesk.json` / 命令行给的那份）。
-pub fn configured() -> Vec<String> {
-    crate::landesk::config()
-        .map(|config| config.allowed_networks.clone())
-        .unwrap_or_default()
-}
-
 /// 解析后的白名单；配置有问题时记一条 warn 并退回默认值，不因此拒绝所有连接。
 ///
-/// 这里故意不留“启动时读一次”的入口：曾经的 `load()` 返回 `OnceLock` 缓存，让改完配置的服务
-/// 看起来生效、实际还是旧列表。需要白名单的地方都用 `parse_or_default(&configured())`，
-/// 每次拿当下这份（`configured()` 也每次重读）。
+/// 调用方应该把 `landesk::reload_listen_spec()` 里那份 `allowed_networks` 传进来（监督循环
+/// 每次重绑都重新读），**不要**用 `landesk::config()`：它是 `OnceLock`，返回的是启动时的名单，
+/// 改完配置看起来生效、实际还是旧的。这里没留“自己取配置”的便捷入口，就是为了不给下一个人
+/// 留那条路。
 #[cfg(test)]
 mod tests {
     use super::*;

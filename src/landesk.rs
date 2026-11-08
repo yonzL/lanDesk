@@ -1014,6 +1014,13 @@ pub fn publish_listen_status(state: &str, port: u16, error: &str) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default();
     let since = next_since(previous.as_ref(), state, port, error, now);
+    let changed = previous
+        .map(|p| (p.state, p.port, p.error) != (state.to_owned(), port, error.to_owned()))
+        .unwrap_or(true);
+    // 状态没变就不重写：端口被长期占用时这里每秒调一次，否则一天白写八万多次。
+    if !changed {
+        return;
+    }
     let status = ListenStatus {
         state: state.to_owned(),
         port,
@@ -1025,14 +1032,10 @@ pub fn publish_listen_status(state: &str, port: u16, error: &str) {
             log::debug!("landesk: cannot write listener status: {err}");
         }
     }
-    let changed = previous.map(|p| (p.state, p.port, p.error) != (state.to_owned(), port, error.to_owned()))
-        .unwrap_or(true);
-    if changed {
-        match state {
-            "listening" => log::info!("landesk: listener state=listening port={port}"),
-            "failed" => log::warn!("landesk: listener state=failed port={port}: {error}"),
-            other => log::info!("landesk: listener state={other} port={port}"),
-        }
+    match state {
+        "listening" => log::info!("landesk: listener state=listening port={port}"),
+        "failed" => log::warn!("landesk: listener state=failed port={port}: {error}"),
+        other => log::info!("landesk: listener state={other} port={port}"),
     }
 }
 

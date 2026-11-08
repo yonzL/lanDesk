@@ -28,6 +28,24 @@ pub async fn supervise() -> ResultType<()> {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             continue;
         };
+        // Windows 的 `SO_REUSEADDR`（`new_listener(.., true)`）允许第二个实例绑定同一端口，
+        // 于是“新起的服务在听”会是假的：连接全落到先绑的那个进程，而两个进程都报 listening。
+        // 绑定前先探一次，有人应答就走下面的失败/重试分支。
+        if port_answers(spec.port).await {
+            hbb_common::throttled_log!(
+                std::time::Duration::from_secs(60),
+                warn,
+                "landesk: port {} is already held by another process; retrying",
+                spec.port
+            );
+            crate::landesk::publish_listen_status(
+                "failed",
+                spec.port,
+                "port already in use by another process",
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
         let listener = match tcp::new_listener(("0.0.0.0", spec.port), true).await {
             Ok(listener) => listener,
             Err(err) => {
@@ -70,6 +88,19 @@ pub async fn supervise() -> ResultType<()> {
         let _ = stop_tx.send(true);
         let _ = handle.await;
     }
+}
+
+/// `127.0.0.1:port` 上是否已经有人在应答。
+///
+/// 只用来识别“端口已被占”：`SO_REUSEADDR` 会让绑定成功，只有真去连一次才能看出来。
+async fn port_answers(port: u16) -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .map(|res| res.is_ok())
+    .unwrap_or(false)
 }
 
 /// accept 循环：被监督循环拉起，收到停止信号就放弃监听（不碰已有会话）。
@@ -293,4 +324,26 @@ mod tests {
             "no visible difference"
         );
     }
+
+    /// 绑定成功不代表端口是我们的：Windows 的 `SO_REUSEADDR` 让第二个实例也能绑同一端口，
+    /// 所以绑定前必须靠“连一次有没有人应答”判占用。
+    #[tokio::test]
+    async fn a_held_port_answers_and_a_released_one_does_not() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind ephemeral");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(port_answers(port).await, "an active listener must answer");
+        drop(listener);
+        // 关掉之后必须判为“没人应答”，否则监督循环会一直以为端口被占。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !port_answers(port).await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!("a released port still answered on {port}");
+    }
 }
+

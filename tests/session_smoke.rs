@@ -494,3 +494,111 @@ fn the_external_peer_serves_frames() {
     }
     session.close();
 }
+
+/// 服务从 `landesk.json` 启动（不带 `--landesk-listen`），返回配置文件的路径。
+///
+/// 只有“端口/白名单来自文件”的服务才会重读文件；带命令行参数时命令行优先，改文件不生效。
+fn start_service_from_config(port: u16, pub_key: &str, log: PathBuf) -> (Service, PathBuf) {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_landesk-server"));
+    let config = bin.parent().expect("bin dir").join("landesk.json");
+    write_config(&config, port, pub_key, &["127.0.0.1/32"]);
+
+    let out = std::fs::File::create(&log).expect("service log");
+    let err = out.try_clone().expect("clone log handle");
+    let child = Command::new(&bin)
+        .arg("--server")
+        .env("RUST_LOG", "debug")
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::from(err))
+        .spawn()
+        .expect("spawn service");
+    let service = Service { child, port, log };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return (service, config);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!("service did not listen on port {port} within 30s");
+}
+
+fn write_config(path: &std::path::Path, port: u16, pub_key: &str, networks: &[&str]) {
+    let networks: Vec<String> = networks.iter().map(|n| format!("\"{n}\"")).collect();
+    let text = format!(
+        "{{\"listen_port\": {port}, \"auth_keys\": [\"{pub_key}\"], \"allowed_networks\": [{}]}}",
+        networks.join(",")
+    );
+    std::fs::write(path, text).expect("write landesk.json");
+}
+
+/// 回归：白名单必须来自**这一轮**的配置。曾经的实现绑定时才读一次（`OnceLock`），
+/// 改完 `landesk.json` 看起来生效、实际仍是旧名单。
+#[test]
+fn a_changed_allowlist_applies_without_a_restart() {
+    let _guard = exclusive();
+    let _ = hbb_common::sodiumoxide::init();
+    init_logging();
+    let dir = temp_dir("allowlist");
+    let key_path = dir.join("private.key");
+    let keypair = GlobalKeyPair::generate();
+    keypair.save(&key_path).expect("save key");
+    let pub_key = public_key_hex(&keypair.pk);
+
+    let port = unique_port();
+    let (mut service, config) = start_service_from_config(port, &pub_key, dir.join("service.log"));
+    let addr = format!("127.0.0.1:{port}");
+    let book_path = dir.join("addressbook.json");
+
+    // 第一次：白名单含 127.0.0.1/32，握手能完成（指纹被钉住）。
+    let first = librustdesk::landesk::session::start(
+        addr.clone(),
+        book_path.clone(),
+        key_path.clone(),
+        true,
+    )
+    .expect("start session");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        let pinned = librustdesk::addressbook::AddressBook::load(&book_path)
+            .map(|book| book.pins().get(&addr).is_some())
+            .unwrap_or(false);
+        if pinned {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    first.close();
+
+    // 改配置：把本机地址从白名单里去掉，监督循环应在 1 秒内重绑。
+    write_config(&config, port, &pub_key, &["10.0.0.0/8"]);
+    std::thread::sleep(Duration::from_secs(3));
+
+    let book_path2 = dir.join("addressbook-2.json");
+    let second = librustdesk::landesk::session::start(
+        addr.clone(),
+        book_path2.clone(),
+        key_path.clone(),
+        true,
+    )
+    .expect("start session");
+    // 行为断言：被拒的连接完不成握手，所以不会有钉住的指纹。
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut pinned_again = false;
+    while Instant::now() < deadline {
+        pinned_again = librustdesk::addressbook::AddressBook::load(&book_path2)
+            .map(|book| book.pins().get(&addr).is_some())
+            .unwrap_or(false);
+        if pinned_again {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    second.close();
+    service.kill();
+    let _ = std::fs::remove_file(&config);
+    assert!(
+        !pinned_again,
+        "改完白名单之后连接仍被放行：白名单没有随配置重绑"
+    );
+}
