@@ -11,6 +11,7 @@
 |---|---|
 | [`goal-and-requirements.md`](goal-and-requirements.md) | 产品目标、能力清单、非目标、与 RustDesk / SubnetDesk / Veyon 的差别 |
 | [`architecture.md`](architecture.md) | 直连传输、双挑战身份与 TOFU 指纹、并发模型、会话接线、RustDesk 模块取舍、已知边界 |
+| [`docs/window-features.md`](docs/window-features.md) | 会话窗口功能对照（RustDesk / SubnetDesk / lanDesk），用来决定还要做哪些 |
 | [`todo.md`](todo.md) | 路线图（四个阶段与各自的验收方式）+ 已完成/未完成明细、已知边界（工作追踪，不是规格） |
 
 前两份是 durable spec，都是活的：能力变了、边界动了，就在同一次改动里更新它们。`todo.md` 只回答“做到哪了、还差什么”。
@@ -245,7 +246,16 @@ cd flutter && flutter build windows --debug
 
 地址簿与私钥读写 `master/`（即 exe 同目录）下的 `addressbook.json` 与 `private.key`；CSV 导入仍然用命令行的 `--landesk-book-import`。
 
-**输入源**：上游有两套键盘发送实现，工具栏里可切。landesk 默认用 `Input source 2`（Flutter 直发：会话窗口获得焦点、且指针在画面上时转发）；上游默认的 `Input source 1` 是一个系统级键盘钩子，会主动忽略注入的按键，在装了安全软件的机器上也未必能装上钩子。
+**输入源（影响中文能不能打）**：上游有两套键盘发送实现，工具栏里可切，**我们不改默认值**：
+
+| | `Input source 1`（默认） | `Input source 2` |
+|---|---|---|
+| 按键路径 | rdev 系统级钩子，在**输入法之前**拿原始按键 | Flutter 从窗口收键后直发 |
+| 英文 | ✅ | ✅ |
+| **中文** | ✅ 由**远端**输入法合成 | ❌ Flutter 桌面端没有 IME 客户端（只有移动端有隐藏输入框），本机输入法一合成，按键就到不了远端 |
+| 权限 | 需要装系统级钩子 | 不需要 |
+
+所以中文输入必须用 `Input source 1`（真机验证过）；只在“安全软件拦钩子、且不需要打中文”的场景才值得切到 2。
 
 **文件分发（扇出）：** 用命令行，每台一个独立的文件会话并行推同一批文件，进度逐台打印：
 
