@@ -19,7 +19,7 @@
 | # | 事项 | 验收方式 | 状态 |
 |---|---|---|---|
 | 1 | 会话窗口的**键盘注入** | 远端记事本里打字 → SSH 读文件内容对得上 | 已改默认输入源为 Flutter 直发；需人工按键确认一次 |
-| 2 | **文本 / 文件剪贴板 + 音频**在 Flutter 窗口里 | 两台机器实测：本地复制 → 远端 `Get-Clipboard`；文件复制粘贴；声音 | 未验证（eframe 里都验过） |
+| 2 | **文本 / 文件剪贴板 + 音频**在 Flutter 窗口里 | 本地复制 → 远端粘贴可见；反向复制 → 本机剪贴板变；文件复制粘贴落盘；声音 | 文本剪贴板**双向已验证**；音频管线已开（待耳听）；**文件剪贴板未完成** |
 | 3 | 修 **失焦后画面停更** | 会话窗口被盖住再切回来，远端新开的窗口要出现 | 已排除：按变化推流，测试期间的“停更”都是远端没变 |
 | 4 | **删掉 `landesk-client` crate** + 重打包 | 包里只剩 `landesk-server.exe` + `master/`（Flutter），CI/文档同步 | **已完成**：crate 已删，`dist/lanDesk-20261109.zip`（47MB，比之前小 22MB）只有 server + master/ |
 
@@ -44,7 +44,15 @@
 ### 阶段 2（现在）
 
 - [x] **会话窗口的键盘注入**：上游有两条键盘实现，`Input source 1`（rdev 系统级钩子）会主动忽略注入的按键，所以既测不了也不保证在装了安全软件的机器上装得上钩子。landesk 现在把默认值改成 `Input source 2`（Flutter 直发：窗口有焦点、且指针在画面上时转发，见 `landesk::apply_client_defaults`），工具栏仍可切回。实测 Ctrl+Esc 能引起画面级反应；字符级验证受两端中文输入法干扰（本机对照实验同样被吃成 `nuo'te'pa'd`），要人工按键确认一次。
-- [ ] **Flutter 会话窗口的剪贴板与音频实测**：eframe 里文本/文件剪贴板与音频都过了真机；Flutter 走的是上游 `FlutterHandler`，客户端剪贴板监听在非 Flutter UI 里曾零事件。验收方式：本地复制 → SSH 到对端 `Get-Clipboard` 比对；文件复制粘贴看落盘；音频看客户端日志 `Audio playback stream opened` + 人耳确认。
+- [x] **文本剪贴板**在 Flutter 窗口里**双向已验证**（先修了两个真 bug，见下）：
+  - 本机 → 远端：本机 `Set-Clipboard 'L2R-ONE-…'` → 会话里 Ctrl+Esc 开远端开始菜单 → Ctrl+V → 搜索框里出现那串 token。
+  - 远端 → 本机：本机先改成 `L2R-TWO-…`，远端搜索框里仍是 `L2R-ONE-…`；远端 Ctrl+A/C → 本机剪贴板变成 `L2R-ONE-…`（不是 B），证明反向也通。
+- [x] **修掉两个真 bug（`7261f6a`），否则剪贴板根本不可能工作**：
+  1. landesk 自授权分支提前 `return`，跳过了 `try_start_cm` / `try_start_cm_ipc`——CM 既不被告知连接，也从没被拉起；
+  2. `start_ipc` 里的 `while is_prelogin()` 对 SYSTEM 恒为真，永远等不到。
+  两处修完后远端出现 `--landesk-cm` 进程，服务端不再报 `Failed to read clipboard from cm`。
+- [ ] **文件剪贴板**（Flutter 窗口，本机 → 远端）：本机 `Set-Clipboard -Path` 后远端桌面 Ctrl+V **没有落盘**。取证：客户端已经发出剪贴板消息（`Send system clipboard message to remote`），远端 CM 也收到了文件列表（`FileGroupDescriptorW` / `FileContents`，`file_transfer_enabled: true`），但**没有任何文件内容请求**——说明卡在“粘贴时未触发数据拉取”，下一步从 Explorer 的 OLE 数据请求与客户端 `ContextSend` 是否启用查起。
+- [ ] **音频**：日志证明管线打开了（`recved audio format, sample rate=24000` → `Audio playback stream opened` → `Audio playback output callback started`），还差人耳确认一次。
 - [x] **失焦后画面停更（结论：不是 bug）**：原先三次“停更”都有其他解释——本机自测是镜像自己、远端显示器休眠导致黑帧、SSH 启的 GUI 根本不在交互桌面上（session 0），所以远端屏幕确实没变。上游按变化推流，静止就没有新帧。要真证伪需要一台能人为改屏的远端。
 - [x] **删除 `landesk-client` crate**：整个 crate 删除；`Cargo.toml` 成员、CI 的 check 与 release 构建、`scripts/dist.sh` 的拷贝与说明、`README` / `architecture.md` / `docs/flutter-path.md` / `docs/file-clipboard-chain.md` 全部同步。`--landesk-push` 仍可用（走库里的 `session::distribute`，与界面无关）。
 - [x] **重打包**：`dist/lanDesk-20261109.zip`（47MB）：`landesk-server.exe` + `master/`（`landesk-master.exe` + 13 个 DLL + `data/`）+ 使用说明；说明里已经不再提 eframe。包里的 `master/landesk-master.exe` 启动后进程正常、窗口标题 `lanDesk`（本机当时已锁屏，交互验证待做）。
