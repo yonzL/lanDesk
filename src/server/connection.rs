@@ -2967,6 +2967,14 @@ impl Connection {
             }
             self.handle_login_request_without_validation(&lr).await;
             if self.authorized {
+                // landesk：身份在密钥层已经证过，所以这里提前返回——但**不能因此跳过 CM**。
+                // 服务端是 SYSTEM，读不到用户桌面的剪贴板；剪贴板/文件剪贴板都要靠用户令牌的
+                // CM 进程。不告诉它这条连接（is_authorized/file_transfer_enabled 恒 false），
+                // 它会丢弃每一条 ClipboardFile；不拉起它，连读都读不到（实测：
+                // `Failed to read clipboard from cm: os error 2`）。
+                self.try_start_cm(lr.my_id.clone(), lr.my_name.clone(), self.authorized);
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                self.try_start_cm_ipc();
                 return true;
             }
             self.reset_session_scope_for_login();
@@ -6474,11 +6482,16 @@ async fn start_ipc(
 ) -> ResultType<()> {
     use hbb_common::anyhow::anyhow;
 
-    loop {
-        if !crate::platform::is_prelogin() {
-            break;
+    // 上游的 `--server` 跑在用户会话里，所以这里等“过了登录界面”才有意义。
+    // landesk 的服务进程永远是 SYSTEM（`is_prelogin()` 对 SYSTEM 恒为 true），而 CM 要跑的
+    // 是**控制台用户**的会话——再等下去就永远拉不起 CM（剪贴板/文件剪贴板全部失效）。
+    if !crate::landesk::takes_over_network() {
+        loop {
+            if !crate::platform::is_prelogin() {
+                break;
+            }
+            sleep(1.).await;
         }
-        sleep(1.).await;
     }
     let mut stream = None;
     if let Ok(s) = crate::ipc::connect(1000, "_cm").await {
